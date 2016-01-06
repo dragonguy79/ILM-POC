@@ -68,8 +68,10 @@ create or replace PACKAGE BODY ILM_CORE AS
        
       -- rebuild index
       RUN_TASK('ILM_CORE.REBUILD_GLOBAL_INDEX(''' || managed_table.TABLENAME || ''')', 200);
-      RUN_TASK('ILM_CORE.REBUILD_PARTITIONED_INDEX(''' || managed_table.TABLENAME || ''')', 300);
+      -- RUN_TASK('ILM_CORE.REBUILD_PARTITIONED_INDEX(''' || managed_table.TABLENAME || ''')', 300);
       RUN_TASK('ILM_CORE.REBUILD_SUBPARTITIONED_INDEX(''' || managed_table.TABLENAME || ''')', 400);
+      
+      RUN_TASK('ILM_CORE.MOVE_LOB_SEGMENTS(''' || managed_table.TABLENAME || ''')', 500);
         
     END LOOP;
     
@@ -78,7 +80,6 @@ create or replace PACKAGE BODY ILM_CORE AS
     UPDATE ILMJOB SET STATUS = JOBSTATUS_ENDED, ENDTIME = SYSTIMESTAMP WHERE ID = CURRENT_JOB_ID;
     COMMIT;
   END;
-  
   
   -----------------------------------------------------------------------------------------------------------------
   -- Proxy of all tasks
@@ -111,8 +112,8 @@ create or replace PACKAGE BODY ILM_CORE AS
     WHEN OTHERS THEN
       -- log error message in table MIGRATION_STEP and MIGRATION_LOG, and raise error
       LOG_MESSAGE('Exception is caught : ' || ' - ' || SQLERRM || ' - ' || dbms_utility.format_error_backtrace() || '. ');
-      UPDATE ILMTASK SET STATUS = TASKSTATUS_FAILED, ENDTIME = SYSTIMESTAMP WHERE ID = CURRENT_TASK_ID;
-      UPDATE ILMJOB SET STATUS = JOBSTATUS_FAILED, ENDTIME = SYSTIMESTAMP WHERE ID = CURRENT_JOB_ID;
+      UPDATE ILMTASK SET STATUS=TASKSTATUS_FAILED, ENDTIME=SYSTIMESTAMP WHERE ID=CURRENT_TASK_ID;
+      UPDATE ILMJOB SET STATUS=JOBSTATUS_FAILED, ENDTIME=SYSTIMESTAMP WHERE ID=CURRENT_JOB_ID;
       COMMIT;
       raise;
   END;
@@ -123,7 +124,7 @@ create or replace PACKAGE BODY ILM_CORE AS
   PROCEDURE LOG_MESSAGE (MESSAGE in VARCHAR2) AS
     PREFIX VARCHAR2(100);
   BEGIN
-    PREFIX := '[JOBID='||CURRENT_JOB_ID||',MOVESEQUENCE='||CURRENT_MOVE_SEQUENCE||',TASKID='||CURRENT_TASK_ID||',OPERATIONID='||CURRENT_OPERATION_ID||']';
+    PREFIX := '[JOBID='||CURRENT_JOB_ID||',TASKID='||CURRENT_TASK_ID||',MOVESEQUENCE='||CURRENT_MOVE_SEQUENCE||',OPERATIONID='||CURRENT_OPERATION_ID||']';
     INSERT INTO ILMLOG(ID, LOG, WHENCREATED) VALUES(ILMLOG_SEQUENCE.nextval, SUBSTR(PREFIX || MESSAGE, 1, 400), SYSTIMESTAMP);
   END;
   
@@ -144,7 +145,7 @@ create or replace PACKAGE BODY ILM_CORE AS
     HIGH_VALUE_T TIMESTAMP;
     RETENTION_MONTH NUMBER(3, 0);
   BEGIN
-    FOR pRow in (select PARTITION_NAME, HIGH_VALUE from USER_TAB_PARTITIONS WHERE TABLESPACE_NAME=FROM_TBS AND TABLE_NAME=TABLE_NAME ORDER BY HIGH_VALUE)
+    FOR pRow in (select PARTITION_NAME, HIGH_VALUE from USER_TAB_PARTITIONS WHERE TABLESPACE_NAME=FROM_TBS AND TABLE_NAME=TABLE_NAME)
     LOOP
 
       -- get high value in TIMESTAMP from LONG
@@ -158,20 +159,22 @@ create or replace PACKAGE BODY ILM_CORE AS
       RETENTION_MONTH := ILM_COMMON.GET_RETENTION(TABLE_NAME, FROM_STAGE);
       
       -- only move subpartitions that are older than retention plan
-      IF HIGH_VALUE_T < ADD_MONTHS(systimestamp, -RETENTION_MONTH)  THEN
+      IF HIGH_VALUE_T < ADD_MONTHS(JOB_START_TSP, -RETENTION_MONTH)  THEN
+        -- update metadata in ILMMANAGEDTABLE
+        UPDATE ILMMANAGEDTABLE SET STATUS=ILMTABLESTATUS_PARTITIONMOVE WHERE TABLENAME=TABLE_NAME;
+        
         FOR spRow in (select SUBPARTITION_NAME from USER_TAB_SUBPARTITIONS WHERE TABLESPACE_NAME=FROM_TBS AND PARTITION_NAME=pRow.PARTITION_NAME)
         LOOP
-          UPDATE ILMMANAGEDTABLE SET STATUS=ILMTABLESTATUS_INCONSISTENT WHERE TABLE_NAME=TABLE_NAME;
           LOG_MESSAGE('Move subpartition ' || TABLE_NAME || '.' || spRow.SUBPARTITION_NAME || ' from tablespace ' || FROM_TBS ||' to tablespace '|| TO_TBS);
           EXECUTE IMMEDIATE 'ALTER TABLE ' || TABLE_NAME || ' MOVE SUBPARTITION ' || spRow.SUBPARTITION_NAME || ' TABLESPACE ' || TO_TBS || ' ONLINE';
         END LOOP;
+        
+        -- update partition metadata [TABLESPACE_NAME]
+        EXECUTE IMMEDIATE 'ALTER TABLE ' || TABLE_NAME || ' MODIFY DEFAULT ATTRIBUTES FOR PARTITION ' || pRow.PARTITION_NAME || ' TABLESPACE ' || TO_TBS;
       END IF;
-      
-      -- update partition metadata [TABLESPACE_NAME]
-      EXECUTE IMMEDIATE 'ALTER TABLE ' || TABLE_NAME || ' MODIFY DEFAULT ATTRIBUTES FOR PARTITION ' || pRow.PARTITION_NAME || ' TABLESPACE ' || TO_TBS;
-      
+
       -- validate status of ILMMANAGEDTABLE
-      UPDATE ILMMANAGEDTABLE SET STATUS=ILMTABLESTATUS_VALID WHERE TABLE_NAME=TABLE_NAME;
+      UPDATE ILMMANAGEDTABLE SET STATUS=ILMTABLESTATUS_VALID, LASTPARTITIONMOVE=pRow.PARTITION_NAME WHERE TABLENAME=TABLE_NAME;
     END LOOP;
   END;
 
@@ -181,27 +184,37 @@ create or replace PACKAGE BODY ILM_CORE AS
   -----------------------------------------------------------------------------------------------------------------
   PROCEDURE REBUILD_GLOBAL_INDEX(TABLE_NAME in VARCHAR2) AS
   BEGIN
-    UPDATE ILMMANAGEDTABLE SET STATUS=ILMTABLESTATUS_INDEXREBUILD WHERE TABLE_NAME=TABLE_NAME;
+    -- update metadata in ILMMANAGEDTABLE
+    UPDATE ILMMANAGEDTABLE SET STATUS=ILMTABLESTATUS_INDEXREBUILD WHERE TABLENAME=TABLE_NAME;
+    
+    -- rebuild global index
     FOR iRow in (SELECT INDEX_NAME, TABLESPACE_NAME FROM USER_INDEXES WHERE TABLE_NAME = TABLE_NAME AND STATUS = 'INVALID') 
     LOOP
       LOG_MESSAGE('Rebuild global index ' || TABLE_NAME || '.' || iRow.INDEX_NAME || ' in tablespace ' || iRow.TABLESPACE_NAME);
       EXECUTE IMMEDIATE 'ALTER INDEX ' || iRow.INDEX_NAME || ' REBUILD NOLOGGING';
     END LOOP;
-    UPDATE ILMMANAGEDTABLE SET STATUS=ILMTABLESTATUS_VALID WHERE TABLE_NAME=TABLE_NAME;
+    
+    -- update metadata in ILMMANAGEDTABLE
+    UPDATE ILMMANAGEDTABLE SET STATUS=ILMTABLESTATUS_VALID WHERE TABLENAME=TABLE_NAME;
   END;
   
-   -----------------------------------------------------------------------------------------------------------------
+  -----------------------------------------------------------------------------------------------------------------
   -- Operation: Move and rebuild local partitioned index
   -----------------------------------------------------------------------------------------------------------------
   PROCEDURE REBUILD_PARTITIONED_INDEX(TABLE_NAME in VARCHAR2) AS
   BEGIN
-    UPDATE ILMMANAGEDTABLE SET STATUS=ILMTABLESTATUS_INDEXREBUILD WHERE TABLE_NAME=TABLE_NAME;
+    -- update metadata in ILMMANAGEDTABLE
+    UPDATE ILMMANAGEDTABLE SET STATUS=ILMTABLESTATUS_INDEXREBUILD WHERE TABLENAME=TABLE_NAME;
+    
+    -- move and rebuild 1-level partitioned index
     FOR iRow in (SELECT INDEX_NAME, PARTITION_NAME FROM USER_IND_PARTITIONS WHERE TABLE_NAME = TABLE_NAME AND ((TABLESPACE_NAME = FROM_TBS AND STATUS!='N/A') OR (TABLESPACE_NAME = TO_TBS AND STATUS='UNUSABLE')) ) 
     LOOP
       LOG_MESSAGE('Rebuild partition ' || iRow.PARTITION_NAME || ' index ' || TABLE_NAME || '.' || iRow.INDEX_NAME);
       EXECUTE IMMEDIATE 'ALTER INDEX ' || iRow.INDEX_NAME || ' REBUILD PARTITION '|| iRow.PARTITION_NAME || ' TABLESPACE ' || TO_TBS;
     END LOOP;
-    UPDATE ILMMANAGEDTABLE SET STATUS=ILMTABLESTATUS_VALID WHERE TABLE_NAME=TABLE_NAME;
+    
+    -- update metadata in ILMMANAGEDTABLE
+    UPDATE ILMMANAGEDTABLE SET STATUS=ILMTABLESTATUS_VALID WHERE TABLENAME=TABLE_NAME;
   END;
 
  -----------------------------------------------------------------------------------------------------------------
@@ -212,7 +225,7 @@ create or replace PACKAGE BODY ILM_CORE AS
     HIGH_VALUE_T TIMESTAMP;
     RETENTION_MONTH NUMBER(3, 0);
   BEGIN
-    FOR pRow in (select part.PARTITION_NAME, part.HIGH_VALUE, part.INDEX_NAME from USER_IND_PARTITIONS part INNER JOIN USER_INDEXES ind on ind.INDEX_NAME=part.INDEX_NAME WHERE part.TABLESPACE_NAME=FROM_TBS AND ind.TABLE_NAME=TABLE_NAME ORDER BY part.INDEX_NAME, part.HIGH_VALUE)
+    FOR pRow in (select part.PARTITION_NAME, part.HIGH_VALUE, part.INDEX_NAME from USER_IND_PARTITIONS part INNER JOIN USER_INDEXES ind on ind.INDEX_NAME=part.INDEX_NAME WHERE part.TABLESPACE_NAME=FROM_TBS AND ind.TABLE_NAME=TABLE_NAME ORDER BY part.INDEX_NAME)
     LOOP
      
       -- get high value in TIMESTAMP from LONG
@@ -226,19 +239,76 @@ create or replace PACKAGE BODY ILM_CORE AS
       RETENTION_MONTH := ILM_COMMON.GET_RETENTION(TABLE_NAME, FROM_STAGE);
       
       -- only move subpartitioned index that are older than retention plan
-      IF HIGH_VALUE_T < ADD_MONTHS(systimestamp, -RETENTION_MONTH)  THEN
+      IF HIGH_VALUE_T < ADD_MONTHS(JOB_START_TSP, -RETENTION_MONTH)  THEN
+      
+        -- update metadata in ILMMANAGEDTABLE
+        UPDATE ILMMANAGEDTABLE SET STATUS=ILMTABLESTATUS_INDEXREBUILD WHERE TABLENAME=TABLE_NAME;
+        
+        -- move and rebuild 2-level subpartitioned index
         FOR spRow in (SELECT INDEX_NAME, SUBPARTITION_NAME FROM USER_IND_SUBPARTITIONS WHERE PARTITION_NAME=pRow.PARTITION_NAME AND (TABLESPACE_NAME=FROM_TBS OR (TABLESPACE_NAME=TO_TBS AND STATUS='UNUSABLE') )) 
         LOOP
           LOG_MESSAGE('Rebuild subpartition ' || spRow.SUBPARTITION_NAME || ' index ' || TABLE_NAME || '.' || spRow.INDEX_NAME);
           EXECUTE IMMEDIATE 'ALTER INDEX ' || spRow.INDEX_NAME || ' REBUILD SUBPARTITION '|| spRow.SUBPARTITION_NAME || ' TABLESPACE ' || TO_TBS;
         END LOOP;
+        
+        -- update partition metadata [TABLESPACE_NAME]
+        EXECUTE IMMEDIATE 'ALTER INDEX ' || pRow.INDEX_NAME || ' MODIFY DEFAULT ATTRIBUTES FOR PARTITION ' || pRow.PARTITION_NAME || ' TABLESPACE ' || TO_TBS;
       END IF;
-      
-      -- update partition metadata [TABLESPACE_NAME]
-      EXECUTE IMMEDIATE 'ALTER INDEX ' || pRow.INDEX_NAME || ' MODIFY DEFAULT ATTRIBUTES FOR PARTITION ' || pRow.PARTITION_NAME || ' TABLESPACE ' || TO_TBS;
+    
     END LOOP;
     
-    UPDATE ILMMANAGEDTABLE SET STATUS=ILMTABLESTATUS_VALID WHERE TABLE_NAME=TABLE_NAME;
+    -- update metadata in ILMMANAGEDTABLE
+    UPDATE ILMMANAGEDTABLE SET STATUS=ILMTABLESTATUS_VALID WHERE TABLENAME=TABLE_NAME;
+  END;
+  
+  
+  -----------------------------------------------------------------------------------------------------------------
+  -- Operation: Move subpartition from one tablespace to another tablespace
+  -----------------------------------------------------------------------------------------------------------------
+  PROCEDURE MOVE_LOB_SEGMENTS(I_TABLE_NAME in VARCHAR2) AS
+    HIGH_VALUE_C VARCHAR2(100);
+    HIGH_VALUE_T TIMESTAMP;
+    RETENTION_MONTH NUMBER(3, 0);
+  BEGIN
+    FOR pRow in (
+      select lob.lob_partition_name, tab.HIGH_VALUE, lob.column_name, lob.partition_name
+        from USER_TAB_PARTITIONS tab INNER JOIN USER_LOB_PARTITIONS lob on lob.partition_name=tab.partition_name
+        WHERE tab.TABLE_NAME=I_TABLE_NAME
+    )
+    LOOP
+
+      -- get high value in TIMESTAMP from LONG
+      HIGH_VALUE_C := pRow.HIGH_VALUE;  -- convert to VARCHAR2
+      IF HIGH_VALUE_C = 'MAXVALUE' THEN   -- do not process partition with high value=MAXVALUE
+        CONTINUE;
+      END IF;
+      EXECUTE IMMEDIATE 'SELECT '||HIGH_VALUE_C||' FROM DUAL' INTO HIGH_VALUE_T;     -- convert to TIMESTAMP
+
+      -- get retention plan
+      RETENTION_MONTH := ILM_COMMON.GET_RETENTION(I_TABLE_NAME, FROM_STAGE);
+      
+      -- only move subpartitions that are older than retention plan
+      IF HIGH_VALUE_T < ADD_MONTHS(JOB_START_TSP, -RETENTION_MONTH)  THEN
+        -- update metadata in ILMMANAGEDTABLE
+        UPDATE ILMMANAGEDTABLE SET STATUS=ILMTABLESTATUS_LOBMOVE WHERE TABLENAME=I_TABLE_NAME;
+        
+        -- move subpartitioned lob
+        FOR spRow in (
+          select SUBPARTITION_NAME from USER_LOB_SUBPARTITIONS 
+            WHERE LOB_PARTITION_NAME=pRow.LOB_PARTITION_NAME AND TABLESPACE_NAME=FROM_TBS)
+        LOOP
+          LOG_MESSAGE('Move subpartition lob ' || I_TABLE_NAME || '.' || spRow.SUBPARTITION_NAME || '(column:' || pRow.COLUMN_NAME || ') from tablespace ' || FROM_TBS ||' to tablespace '|| TO_TBS);
+          EXECUTE IMMEDIATE 'ALTER TABLE ' || I_TABLE_NAME || ' MOVE SUBPARTITION ' || spRow.SUBPARTITION_NAME || ' LOB (' || pRow.COLUMN_NAME || ') STORE AS SECUREFILE (TABLESPACE ' || TO_TBS || ')';
+        END LOOP;
+        
+        -- update partition metadata [TABLESPACE_NAME]
+        EXECUTE IMMEDIATE 'ALTER TABLE ' || I_TABLE_NAME || ' MODIFY DEFAULT ATTRIBUTES FOR PARTITION ' || pRow.PARTITION_NAME || ' LOB(' || pRow.COLUMN_NAME || ')(TABLESPACE ' || TO_TBS || ')';
+        
+      END IF;
+      
+      -- update metadata in ILMMANAGEDTABLE
+      UPDATE ILMMANAGEDTABLE SET STATUS=ILMTABLESTATUS_VALID WHERE TABLENAME=I_TABLE_NAME;
+    END LOOP;
   END;
   
 END ILM_CORE;

@@ -15,9 +15,10 @@ create or replace PACKAGE ILM_CORE AS
   TASKSTATUS_FAILED CONSTANT VARCHAR2(10) := 'FAILED';
   TASKSTATUS_ENDED CONSTANT VARCHAR2(10) := 'ENDED';
   
-  ILMTABLESTATUS_VALID CONSTANT VARCHAR2(15) := 'VALID';
-  ILMTABLESTATUS_INCONSISTENT CONSTANT VARCHAR2(15) := 'INCONSISTENT';
-  ILMTABLESTATUS_INDEXREBUILD CONSTANT VARCHAR2(15) := 'INDEX_REBUILD';
+  ILMTABLESTATUS_VALID CONSTANT VARCHAR2(20) := 'VALID';
+  ILMTABLESTATUS_PARTITIONMOVE CONSTANT VARCHAR2(20) := 'PARTITION_MOVE';
+  ILMTABLESTATUS_INDEXREBUILD CONSTANT VARCHAR2(20) := 'INDEX_REBUILD';
+  ILMTABLESTATUS_LOBMOVE CONSTANT VARCHAR2(20) := 'LOB_MOVE';
   
   -----------------------------------------------------------------------------------------------------------------
   -- Package variable
@@ -36,7 +37,6 @@ create or replace PACKAGE ILM_CORE AS
   JOB_START_TSP TIMESTAMP := SYSTIMESTAMP;
   TEXT_BUFFER VARCHAR2(200);
   
-  
   -----------------------------------------------------------------------------------------------------------------
   -- Procedures 
   -----------------------------------------------------------------------------------------------------------------
@@ -51,6 +51,7 @@ create or replace PACKAGE ILM_CORE AS
   PROCEDURE REBUILD_PARTITIONED_INDEX(TABLE_NAME in VARCHAR2);
   PROCEDURE REBUILD_SUBPARTITIONED_INDEX(TABLE_NAME in VARCHAR2);
   PROCEDURE THROW_EXCEPTION (ERROR_MESSAGE in VARCHAR2);
+  PROCEDURE MOVE_LOB_SEGMENTS(I_TABLE_NAME in VARCHAR2);
   
   -----------------------------------------------------------------------------------------------------------------
   -- Functions
