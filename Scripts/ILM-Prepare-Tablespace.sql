@@ -4,6 +4,7 @@
 
 -- remove log segment
 drop table "PAYMENTINTERCHANGE" cascade constraints PURGE;
+drop table "PAYMENTINTERCHANGECOLD" cascade constraints PURGE;
 
 -- drop tablespace
 DROP TABLESPACE ILM_COLD_TBS INCLUDING CONTENTS AND DATAFILES CASCADE CONSTRAINTS;
