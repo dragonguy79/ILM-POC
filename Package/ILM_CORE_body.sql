@@ -62,15 +62,14 @@ create or replace PACKAGE BODY ILM_CORE AS
     LOOP
       CURRENT_MOVE_SEQUENCE := managed_table.MOVESEQUENCE;
       
-      -- move sub partition 
+      -- move data
       RUN_TASK('ILM_CORE.MOVE_SUBPARTITIONS(''' || managed_table.TABLENAME || ''')', 100);
-       
-      -- rebuild index
-      RUN_TASK('ILM_CORE.REBUILD_GLOBAL_INDEX(''' || managed_table.TABLENAME || ''')', 200);
-      -- RUN_TASK('ILM_CORE.REBUILD_PARTITIONED_INDEX(''' || managed_table.TABLENAME || ''')', 300);
-      RUN_TASK('ILM_CORE.REBUILD_SUBPARTITIONED_INDEX(''' || managed_table.TABLENAME || ''')', 400);
+      RUN_TASK('ILM_CORE.MOVE_LOB_SEGMENTS(''' || managed_table.TABLENAME || ''')', 200);
       
-      RUN_TASK('ILM_CORE.MOVE_LOB_SEGMENTS(''' || managed_table.TABLENAME || ''')', 500);
+      -- rebuild index
+      RUN_TASK('ILM_CORE.REBUILD_GLOBAL_INDEX(''' || managed_table.TABLENAME || ''')', 300);
+      RUN_TASK('ILM_CORE.REBUILD_PARTITIONED_INDEX(''' || managed_table.TABLENAME || ''')', 400);
+      RUN_TASK('ILM_CORE.REBUILD_SUBPARTITIONED_INDEX(''' || managed_table.TABLENAME || ''')', 500);
         
     END LOOP;
     
@@ -118,13 +117,13 @@ create or replace PACKAGE BODY ILM_CORE AS
   END;
   
   -----------------------------------------------------------------------------------------------------------------
-  -- Move subpartition from one tablespace to another tablespace
+  -- Log message in ILMLOG table
   -----------------------------------------------------------------------------------------------------------------
-  PROCEDURE LOG_MESSAGE (MESSAGE in VARCHAR2) AS
+  PROCEDURE LOG_MESSAGE (I_MESSAGE in VARCHAR2) AS
     PREFIX VARCHAR2(100);
   BEGIN
     PREFIX := '[JOBID='||CURRENT_JOB_ID||',TASKID='||CURRENT_TASK_ID||',MOVESEQUENCE='||CURRENT_MOVE_SEQUENCE||',OPERATIONID='||CURRENT_OPERATION_ID||']';
-    INSERT INTO ILMLOG(ID, LOG, WHENCREATED) VALUES(ILMLOG_SEQUENCE.nextval, SUBSTR(PREFIX || MESSAGE, 1, 400), SYSTIMESTAMP);
+    INSERT INTO ILMLOG(ID, MESSAGE, WHENCREATED) VALUES(ILMLOG_SEQUENCE.nextval, SUBSTR(PREFIX || I_MESSAGE, 1, 400), SYSTIMESTAMP);
   END;
   
   -----------------------------------------------------------------------------------------------------------------
@@ -187,7 +186,7 @@ create or replace PACKAGE BODY ILM_CORE AS
     ILM_COMMON.UPDATE_ILMTABLE_STATUS(TABLE_NAME, FROM_STAGE, ILMTABLESTATUS_INDEXREBUILD);
     
     -- rebuild global index
-    FOR iRow in (SELECT INDEX_NAME, TABLESPACE_NAME FROM USER_INDEXES WHERE TABLE_NAME = TABLE_NAME AND STATUS = 'INVALID') 
+    FOR iRow in (SELECT INDEX_NAME, TABLESPACE_NAME FROM USER_INDEXES WHERE TABLE_NAME = TABLE_NAME AND STATUS in ('UNUSABLE','INVALID'))
     LOOP
       LOG_MESSAGE('Rebuild global index ' || TABLE_NAME || '.' || iRow.INDEX_NAME || ' in tablespace ' || iRow.TABLESPACE_NAME);
       EXECUTE IMMEDIATE 'ALTER INDEX ' || iRow.INDEX_NAME || ' REBUILD NOLOGGING';
