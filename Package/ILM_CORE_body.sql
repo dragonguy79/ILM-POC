@@ -3,20 +3,69 @@ create or replace PACKAGE BODY ILM_CORE AS
   -----------------------------------------------------------------------------------------------------------------
   -- Job to move data from HOT to WARM
   -----------------------------------------------------------------------------------------------------------------
-  PROCEDURE RUN_HOT2WARM_JOB(RESUME_JOB_ID in NUMBER) AS
+  PROCEDURE RUN_HOT2WARM_JOB AS
+  BEGIN
+     FOR managed_table IN (SELECT TABLENAME, MOVESEQUENCE from ILMMANAGEDTABLE WHERE MOVESEQUENCE >= CURRENT_MOVE_SEQUENCE ORDER BY MOVESEQUENCE ASC) 
+      LOOP
+        CURRENT_MOVE_SEQUENCE := managed_table.MOVESEQUENCE;
+        
+        -- move data
+        RUN_TASK('ILM_CORE.MOVE_EXPIRED_PARTITIONS(''' || managed_table.TABLENAME || ''')', 100);
+        RUN_TASK('ILM_CORE.MOVE_EXPIRED_LOB(''' || managed_table.TABLENAME || ''')', 200);
+        
+        -- rebuild index
+        RUN_TASK('ILM_CORE.REBUILD_GLOBAL_INDEX(''' || managed_table.TABLENAME || ''')', 300);
+        RUN_TASK('ILM_CORE.REBUILD_PARTITIONED_INDEX(''' || managed_table.TABLENAME || ''')', 400);
+        RUN_TASK('ILM_CORE.REBUILD_SUBPARTITIONED_INDEX(''' || managed_table.TABLENAME || ''')', 500);
+
+      END LOOP;
+  END;
+  
+  -----------------------------------------------------------------------------------------------------------------
+  -- Job to move data from WARM to COLD
+  -----------------------------------------------------------------------------------------------------------------
+  PROCEDURE RUN_WARM2COLD_JOB AS
+  BEGIN
+     FOR managed_table IN (SELECT TABLENAME, MOVESEQUENCE from ILMMANAGEDTABLE WHERE MOVESEQUENCE >= CURRENT_MOVE_SEQUENCE ORDER BY MOVESEQUENCE ASC) 
+      LOOP
+        CURRENT_MOVE_SEQUENCE := managed_table.MOVESEQUENCE;
+        
+        
+        
+      END LOOP;
+  END;
+ 
+  -----------------------------------------------------------------------------------------------------------------
+  -- Run job
+  -----------------------------------------------------------------------------------------------------------------
+  PROCEDURE RUN_JOB(I_JOB VARCHAR2, I_RESUME_JOB_ID in NUMBER DEFAULT NULL) AS
     STEP_ID VARCHAR2 (50);
     OPERATION VARCHAR2(200);
   BEGIN
-    FROM_STAGE := HOT_STAGE;
-    TO_STAGE := WARM_STAGE;
+    -- initialize stages
+    IF I_JOB = HOT2WARM_JOB THEN
+      FROM_STAGE := HOT_STAGE;
+      TO_STAGE := WARM_STAGE;
+    ELSIF I_JOB = WARM2COLD_JOB THEN
+      FROM_STAGE := WARM_STAGE;
+      TO_STAGE := COLD_STAGE;
+    ELSIF I_JOB = COLD2DORMANT_JOB THEN
+      FROM_STAGE := COLD_STAGE;
+      TO_STAGE := DORMANT_STAGE;
+    ELSIF I_JOB = HOT2COLD_JOB THEN
+      FROM_STAGE := HOT_STAGE;
+      TO_STAGE := COLD_STAGE;
+    ELSE
+      THROW_EXCEPTION('Fail to start job: Job type [' || I_JOB || '] is not valid!');
+    END IF;
     
-    IF RESUME_JOB_ID IS NOT NULL THEN  -- resume job
-      IF ILM_COMMON.CAN_RESUME_JOB(RESUME_JOB_ID) = 1 THEN
+    IF I_RESUME_JOB_ID IS NOT NULL THEN  -- resume job
+      IF ILM_COMMON.CAN_RESUME_JOB(I_RESUME_JOB_ID) = 1 THEN
         -- get highest step id from the job
         EXECUTE IMMEDIATE 'SELECT ILMTASK.STEPID, ILMJOB.FROMTABLESPACE, ILMJOB.TOTABLESPACE, ILMJOB.STARTTIME FROM ILMJOB
                             INNER JOIN ILMTASK on ILMTASK.JOBID = ILMJOB.ID
                             WHERE ILMTASK.ID = (SELECT MAX(ID) FROM ILMTASK WHERE JOBID = :1)'  
-            INTO STEP_ID, FROM_TBS, TO_TBS, JOB_START_TSP USING RESUME_JOB_ID;
+            INTO STEP_ID, FROM_TBS, TO_TBS, JOB_START_TSP USING I_RESUME_JOB_ID;
             
         IF (INSTR(STEP_ID, '_') > 0 ) THEN   -- step ID has move sequence and operation id
             CURRENT_MOVE_SEQUENCE := TO_NUMBER(SUBSTR(STEP_ID, 1, INSTR(STEP_ID, '_')-1));
@@ -26,11 +75,11 @@ create or replace PACKAGE BODY ILM_CORE AS
         END IF;
         
         -- change job status to STARTED
-        CURRENT_JOB_ID := RESUME_JOB_ID;
+        CURRENT_JOB_ID := I_RESUME_JOB_ID;
         EXECUTE IMMEDIATE 'UPDATE ILMJOB SET STATUS = :1 WHERE ID = :2' USING ILM_CORE.JOBSTATUS_STARTED, CURRENT_JOB_ID;
-        LOG_MESSAGE('Resuming existing ILM JOB[ID=' || CURRENT_JOB_ID || '] to migrate partitions from '|| FROM_STAGE ||' to ' || TO_STAGE);
+        LOG_MESSAGE('Resuming existing job [ID=' || CURRENT_JOB_ID || '] to migrate partitions from '|| FROM_STAGE ||' to ' || TO_STAGE);
       ELSE
-        THROW_EXCEPTION('Fail to start job: ILM job to resume with ID [' || RESUME_JOB_ID || '] does not exist!');
+        THROW_EXCEPTION('Job[ID=' || I_RESUME_JOB_ID || '] to resume cannot be found.');
       END IF;
   
     ELSE -- new JOB
@@ -57,21 +106,16 @@ create or replace PACKAGE BODY ILM_CORE AS
       LOG_MESSAGE('Created new ILM JOB[ID=' || CURRENT_JOB_ID || '] to migrate partitions from '|| FROM_STAGE ||' to ' || TO_STAGE);
     END IF;
   
-    
-    FOR managed_table IN (SELECT TABLENAME, MOVESEQUENCE from ILMMANAGEDTABLE WHERE MOVESEQUENCE >= CURRENT_MOVE_SEQUENCE ORDER BY MOVESEQUENCE ASC) 
-    LOOP
-      CURRENT_MOVE_SEQUENCE := managed_table.MOVESEQUENCE;
-      
-      -- move data
-      RUN_TASK('ILM_CORE.MOVE_SUBPARTITIONS(''' || managed_table.TABLENAME || ''')', 100);
-      RUN_TASK('ILM_CORE.MOVE_LOB_SEGMENTS(''' || managed_table.TABLENAME || ''')', 200);
-      
-      -- rebuild index
-      RUN_TASK('ILM_CORE.REBUILD_GLOBAL_INDEX(''' || managed_table.TABLENAME || ''')', 300);
-      RUN_TASK('ILM_CORE.REBUILD_PARTITIONED_INDEX(''' || managed_table.TABLENAME || ''')', 400);
-      RUN_TASK('ILM_CORE.REBUILD_SUBPARTITIONED_INDEX(''' || managed_table.TABLENAME || ''')', 500);
-        
-    END LOOP;
+    IF I_JOB = HOT2WARM_JOB THEN
+      RUN_HOT2WARM_JOB;
+    ELSIF I_JOB = WARM2COLD_JOB THEN
+      RUN_HOT2WARM_JOB;
+    ELSIF I_JOB = COLD2DORMANT_JOB THEN
+      RUN_HOT2WARM_JOB;
+    ELSIF I_JOB = HOT2COLD_JOB THEN
+      RUN_HOT2WARM_JOB;
+    END IF;
+   
     
     CURRENT_MOVE_SEQUENCE := null;
     -- job is compoleted
@@ -137,46 +181,88 @@ create or replace PACKAGE BODY ILM_CORE AS
   
   -----------------------------------------------------------------------------------------------------------------
   -- Operation: Move subpartition from one tablespace to another tablespace
+    -- only subpartition that belongs to partition that has exceeded the retention plan will be moved
   -----------------------------------------------------------------------------------------------------------------
-  PROCEDURE MOVE_SUBPARTITIONS(I_TABLE_NAME in VARCHAR2) AS
-    HIGH_VALUE_C VARCHAR2(100);
-    HIGH_VALUE_T TIMESTAMP;
-    RETENTION_MONTH NUMBER(3, 0);
+  PROCEDURE MOVE_EXPIRED_PARTITIONS(I_TABLE_NAME in VARCHAR2) AS
   BEGIN
     FOR pRow in (select PARTITION_NAME, HIGH_VALUE from USER_TAB_PARTITIONS WHERE TABLESPACE_NAME=FROM_TBS AND TABLE_NAME=I_TABLE_NAME)
     LOOP
-
-      -- get high value in TIMESTAMP from LONG
-      HIGH_VALUE_C := pRow.HIGH_VALUE;  -- convert to VARCHAR2
-      IF HIGH_VALUE_C = 'MAXVALUE' THEN   -- do not process partition with high value=MAXVALUE
-        CONTINUE;
-      END IF;
-      EXECUTE IMMEDIATE 'SELECT '||HIGH_VALUE_C||' FROM DUAL' INTO HIGH_VALUE_T;     -- convert to TIMESTAMP
-
-      -- get retention plan
-      RETENTION_MONTH := ILM_COMMON.GET_RETENTION(I_TABLE_NAME, FROM_STAGE);
-      
       -- only move subpartitions that are older than retention plan
-      IF HIGH_VALUE_T < ADD_MONTHS(JOB_START_TSP, -RETENTION_MONTH)  THEN
+      IF ILM_COMMON.IS_PARTITION_EXPIRED(pRow.HIGH_VALUE, ILM_COMMON.GET_RETENTION(I_TABLE_NAME, FROM_STAGE), JOB_START_TSP) = 1 THEN
         -- update metadata in ILMMANAGEDTABLE
         ILM_COMMON.UPDATE_ILMTABLE_STATUS(I_TABLE_NAME, FROM_STAGE, ILMTABLESTATUS_PARTITIONMOVE);
         
-        FOR spRow in (select SUBPARTITION_NAME from USER_TAB_SUBPARTITIONS WHERE TABLESPACE_NAME=FROM_TBS AND PARTITION_NAME=pRow.PARTITION_NAME)
-        LOOP
-          LOG_MESSAGE('Move subpartition ' || I_TABLE_NAME || '.' || spRow.SUBPARTITION_NAME || ' from tablespace ' || FROM_TBS ||' to tablespace '|| TO_TBS);
-          EXECUTE IMMEDIATE 'ALTER TABLE ' || I_TABLE_NAME || ' MOVE SUBPARTITION ' || spRow.SUBPARTITION_NAME || ' ' || ILM_COMMON.GET_COMPRESSION_CLAUSE(I_TABLE_NAME,TO_STAGE) || ' TABLESPACE ' || TO_TBS || ' ONLINE';
-        END LOOP;
-        
+        -- move all subpartitions of selected partition
+        MOVE_SUBPARTITIONS(I_TABLE_NAME, pRow.PARTITION_NAME);
+
         -- update partition metadata [TABLESPACE_NAME]
         EXECUTE IMMEDIATE 'ALTER TABLE ' || I_TABLE_NAME || ' MODIFY DEFAULT ATTRIBUTES FOR PARTITION ' || pRow.PARTITION_NAME || ' ' || ILM_COMMON.GET_COMPRESSION_CLAUSE(I_TABLE_NAME,TO_STAGE) || ' TABLESPACE ' || TO_TBS;
+        
+        -- update metadata in ILMMANAGEDTABLE
+        ILM_COMMON.UPDATE_ILMTABLE_STATUS(I_TABLE_NAME, FROM_STAGE, ILMTABLESTATUS_VALID);
       END IF;
 
-      -- validate status of ILMMANAGEDTABLE
-      ILM_COMMON.UPDATE_ILMTABLE_STATUS(I_TABLE_NAME, FROM_STAGE, ILMTABLESTATUS_VALID);
+    END LOOP;
+  END;
+
+  ----------------------------------------------------------------------------------------------------------------
+  -- Operation: Move all subpartitions from a sinle partition, from one tablespace to another tablespace
+  -----------------------------------------------------------------------------------------------------------------
+  PROCEDURE MOVE_SUBPARTITIONS(I_TABLE_NAME in VARCHAR2, I_PARTITION_NAME in VARCHAR2) AS
+  BEGIN
+    FOR spRow in (select SUBPARTITION_NAME from USER_TAB_SUBPARTITIONS WHERE TABLESPACE_NAME=FROM_TBS AND PARTITION_NAME=I_PARTITION_NAME)
+    LOOP
+      LOG_MESSAGE('Move subpartition ' || I_TABLE_NAME || '.' || spRow.SUBPARTITION_NAME || ' from tablespace ' || FROM_TBS ||' to tablespace '|| TO_TBS);
+      EXECUTE IMMEDIATE 'ALTER TABLE ' || I_TABLE_NAME || ' MOVE SUBPARTITION ' || spRow.SUBPARTITION_NAME || ' ' || ILM_COMMON.GET_COMPRESSION_CLAUSE(I_TABLE_NAME,TO_STAGE) || ' TABLESPACE ' || TO_TBS || ' ONLINE';
     END LOOP;
   END;
 
 
+  -----------------------------------------------------------------------------------------------------------------
+  -- Operation: Move subpartition from one tablespace to another tablespace
+  -----------------------------------------------------------------------------------------------------------------
+  PROCEDURE MOVE_EXPIRED_LOB(I_TABLE_NAME in VARCHAR2) AS
+  BEGIN
+    FOR pRow in (
+      select lob.lob_partition_name, tab.HIGH_VALUE, lob.column_name, lob.partition_name
+        from USER_TAB_PARTITIONS tab INNER JOIN USER_LOB_PARTITIONS lob on lob.partition_name=tab.partition_name
+        WHERE tab.TABLE_NAME=I_TABLE_NAME
+    )
+    LOOP
+
+      -- only move subpartitions that are older than retention plan
+      IF ILM_COMMON.IS_PARTITION_EXPIRED(pRow.HIGH_VALUE, ILM_COMMON.GET_RETENTION(I_TABLE_NAME, FROM_STAGE), JOB_START_TSP) = 1 THEN
+        -- update metadata in ILMMANAGEDTABLE
+        ILM_COMMON.UPDATE_ILMTABLE_STATUS(I_TABLE_NAME, FROM_STAGE, ILMTABLESTATUS_LOBMOVE);
+        
+        -- move subpartitioned lob
+        MOVE_SUBPARTITIONED_LOBS(I_TABLE_NAME, pRow.LOB_PARTITION_NAME);
+        
+        -- update partition metadata [TABLESPACE_NAME]
+        EXECUTE IMMEDIATE 'ALTER TABLE ' || I_TABLE_NAME || ' MODIFY DEFAULT ATTRIBUTES FOR PARTITION ' || pRow.PARTITION_NAME || ' LOB(' || pRow.COLUMN_NAME || ')(TABLESPACE ' || TO_TBS || ')';
+        
+        -- update metadata in ILMMANAGEDTABLE
+        ILM_COMMON.UPDATE_ILMTABLE_STATUS(I_TABLE_NAME, FROM_STAGE, ILMTABLESTATUS_VALID);
+      END IF;
+      
+      
+    END LOOP;
+  END;
+
+  ----------------------------------------------------------------------------------------------------------------
+  -- Operation: Move all subpartitions from a sinle partition, from one tablespace to another tablespace
+  -----------------------------------------------------------------------------------------------------------------
+  PROCEDURE MOVE_SUBPARTITIONED_LOBS(I_TABLE_NAME in VARCHAR2, I_LOB_PARTITION_NAME in VARCHAR2) AS
+  BEGIN
+    FOR spRow in (
+      SELECT SUBPARTITION_NAME, COLUMN_NAME from USER_LOB_SUBPARTITIONS 
+        WHERE LOB_PARTITION_NAME=I_LOB_PARTITION_NAME AND TABLESPACE_NAME=FROM_TBS)
+    LOOP
+      LOG_MESSAGE('Move subpartition lob ' || I_TABLE_NAME || '.' || spRow.SUBPARTITION_NAME || '(column:' || spRow.COLUMN_NAME || ') from tablespace ' || FROM_TBS ||' to tablespace '|| TO_TBS);
+      EXECUTE IMMEDIATE 'ALTER TABLE ' || I_TABLE_NAME || ' MOVE SUBPARTITION ' || spRow.SUBPARTITION_NAME || ' LOB (' || spRow.COLUMN_NAME || ') STORE AS SECUREFILE (TABLESPACE ' || TO_TBS || ')';
+    END LOOP;
+  END;
+  
   -----------------------------------------------------------------------------------------------------------------
   -- Operation: Rebuild global index
   -----------------------------------------------------------------------------------------------------------------
@@ -257,56 +343,6 @@ create or replace PACKAGE BODY ILM_CORE AS
     
     -- update metadata in ILMMANAGEDTABLE
     ILM_COMMON.UPDATE_ILMTABLE_STATUS(TABLE_NAME, FROM_STAGE, ILMTABLESTATUS_VALID);
-  END;
-  
-  
-  -----------------------------------------------------------------------------------------------------------------
-  -- Operation: Move subpartition from one tablespace to another tablespace
-  -----------------------------------------------------------------------------------------------------------------
-  PROCEDURE MOVE_LOB_SEGMENTS(I_TABLE_NAME in VARCHAR2) AS
-    HIGH_VALUE_C VARCHAR2(100);
-    HIGH_VALUE_T TIMESTAMP;
-    RETENTION_MONTH NUMBER(3, 0);
-  BEGIN
-    FOR pRow in (
-      select lob.lob_partition_name, tab.HIGH_VALUE, lob.column_name, lob.partition_name
-        from USER_TAB_PARTITIONS tab INNER JOIN USER_LOB_PARTITIONS lob on lob.partition_name=tab.partition_name
-        WHERE tab.TABLE_NAME=I_TABLE_NAME
-    )
-    LOOP
-
-      -- get high value in TIMESTAMP from LONG
-      HIGH_VALUE_C := pRow.HIGH_VALUE;  -- convert to VARCHAR2
-      IF HIGH_VALUE_C = 'MAXVALUE' THEN   -- do not process partition with high value=MAXVALUE
-        CONTINUE;
-      END IF;
-      EXECUTE IMMEDIATE 'SELECT '||HIGH_VALUE_C||' FROM DUAL' INTO HIGH_VALUE_T;     -- convert to TIMESTAMP
-
-      -- get retention plan
-      RETENTION_MONTH := ILM_COMMON.GET_RETENTION(I_TABLE_NAME, FROM_STAGE);
-      
-      -- only move subpartitions that are older than retention plan
-      IF HIGH_VALUE_T < ADD_MONTHS(JOB_START_TSP, -RETENTION_MONTH)  THEN
-        -- update metadata in ILMMANAGEDTABLE
-        ILM_COMMON.UPDATE_ILMTABLE_STATUS(I_TABLE_NAME, FROM_STAGE, ILMTABLESTATUS_LOBMOVE);
-        
-        -- move subpartitioned lob
-        FOR spRow in (
-          select SUBPARTITION_NAME from USER_LOB_SUBPARTITIONS 
-            WHERE LOB_PARTITION_NAME=pRow.LOB_PARTITION_NAME AND TABLESPACE_NAME=FROM_TBS)
-        LOOP
-          LOG_MESSAGE('Move subpartition lob ' || I_TABLE_NAME || '.' || spRow.SUBPARTITION_NAME || '(column:' || pRow.COLUMN_NAME || ') from tablespace ' || FROM_TBS ||' to tablespace '|| TO_TBS);
-          EXECUTE IMMEDIATE 'ALTER TABLE ' || I_TABLE_NAME || ' MOVE SUBPARTITION ' || spRow.SUBPARTITION_NAME || ' LOB (' || pRow.COLUMN_NAME || ') STORE AS SECUREFILE (TABLESPACE ' || TO_TBS || ')';
-        END LOOP;
-        
-        -- update partition metadata [TABLESPACE_NAME]
-        EXECUTE IMMEDIATE 'ALTER TABLE ' || I_TABLE_NAME || ' MODIFY DEFAULT ATTRIBUTES FOR PARTITION ' || pRow.PARTITION_NAME || ' LOB(' || pRow.COLUMN_NAME || ')(TABLESPACE ' || TO_TBS || ')';
-        
-      END IF;
-      
-      -- update metadata in ILMMANAGEDTABLE
-      ILM_COMMON.UPDATE_ILMTABLE_STATUS(I_TABLE_NAME, FROM_STAGE, ILMTABLESTATUS_VALID);
-    END LOOP;
   END;
   
 END ILM_CORE;

@@ -12,7 +12,6 @@ create or replace PACKAGE BODY ILM_COMMON AS
      RETURN ROW_FOUND;
   END;
   
-  
   -----------------------------------------------------------------------------------------------------------------
   -- Check that a JOB does exist
     -- return 0 if JOB does not exist
@@ -71,4 +70,24 @@ create or replace PACKAGE BODY ILM_COMMON AS
     END;
   END;
   
+  
+  -----------------------------------------------------------------------------------------------------------------
+  --Check if a HIGH VALUE is expired for a specific ILM managed table in specific stage
+  -----------------------------------------------------------------------------------------------------------------
+  FUNCTION IS_PARTITION_EXPIRED(I_HIGH_VALUE in VARCHAR2, I_RETENTION_MONTH in NUMBER, I_CURRENT_TMP TIMESTAMP) RETURN NUMBER AS
+    HIGH_VALUE_T TIMESTAMP;
+  BEGIN
+      IF I_HIGH_VALUE = 'MAXVALUE' THEN   -- do not process partition with high value=MAXVALUE
+        RETURN 0;
+      END IF;
+      EXECUTE IMMEDIATE 'SELECT '||I_HIGH_VALUE||' FROM DUAL' INTO HIGH_VALUE_T;     -- convert to TIMESTAMP
+      
+      -- only move subpartitions that are older than retention plan
+      IF HIGH_VALUE_T < ADD_MONTHS(I_CURRENT_TMP, -I_RETENTION_MONTH) THEN
+        RETURN 1;
+      ELSE 
+        RETURN 0;
+      END IF;
+  END;
+
 END ILM_COMMON;
