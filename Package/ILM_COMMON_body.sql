@@ -57,7 +57,7 @@ create or replace PACKAGE BODY ILM_COMMON AS
       end  || 
       ' FROM ILMMANAGEDTABLE WHERE TABLENAME=:1' INTO COMPRESSION_TYPE USING I_TABLE_NAME;
 
-    RETURN
+    RETURN ' ' ||
     CASE COMPRESSION_TYPE
       WHEN ILM_CORE.COMPRESSION_NONE THEN 'NOCOMPRESS'
       WHEN ILM_CORE.COMPRESSION_BASIC THEN 'COMPRESS BASIC'
@@ -67,7 +67,8 @@ create or replace PACKAGE BODY ILM_COMMON AS
       WHEN ILM_CORE.COMPRESSION_ARCHIVE_LOW THEN 'COMPRESS FOR ARCHIVE LOW'
       WHEN ILM_CORE.COMPRESSION_ARCHIVE_HIGH THEN 'COMPRESS FOR ARCHIVE HIGH'
       ELSE ''
-    END;
+    END
+    || ' ';
   END;
   
   
@@ -90,4 +91,41 @@ create or replace PACKAGE BODY ILM_COMMON AS
       END IF;
   END;
 
+
+  -----------------------------------------------------------------------------------------------------------------
+  -- Return parallel clause based on config parameter.
+  -----------------------------------------------------------------------------------------------------------------
+  FUNCTION GET_PARALLEL_CLAUSE RETURN VARCHAR2 AS
+  pValue VARCHAR2(50);
+  BEGIN
+    EXECUTE IMMEDIATE 'SELECT VALUE FROM ILMCONFIG WHERE PARAM=:1' INTO pValue USING 'PARALLEL_DEGREE';
+    
+    IF pValue IS NOT NULL 
+      THEN RETURN ' PARALLEL '||TO_NUMBER(pValue) || ' ' ;   -- check string value must be numeric
+    ELSE  
+      RETURN '';
+    END IF;
+    
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN RETURN '';
+  END;
+  
+  -----------------------------------------------------------------------------------------------------------------
+  -- Return online clause based on config parameter.
+  -----------------------------------------------------------------------------------------------------------------
+  FUNCTION GET_ONLINE_MOVE_CLAUSE RETURN VARCHAR2 AS
+  pValue VARCHAR2(50);
+  BEGIN
+    SELECT VALUE INTO pValue FROM ILMCONFIG WHERE PARAM='ONLINE_MOVE';
+    
+    IF UPPER(pValue) = 'TRUE'
+      THEN RETURN ' ONLINE ';
+    ELSE  
+      RETURN '';
+    END IF;
+    
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN RETURN '';
+  END;
+  
 END ILM_COMMON;
