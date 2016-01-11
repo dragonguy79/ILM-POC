@@ -128,4 +128,27 @@ create or replace PACKAGE BODY ILM_COMMON AS
       WHEN NO_DATA_FOUND THEN RETURN '';
   END;
   
+  
+  -----------------------------------------------------------------------------------------------------------------
+  -- Return online clause based on config parameter.
+  -----------------------------------------------------------------------------------------------------------------
+  FUNCTION GET_TABLESPACE_NAME(I_STAGE in VARCHAR2, JOB_TIME in TIMESTAMP DEFAULT SYSTIMESTAMP) RETURN VARCHAR2 AS
+    GET_TBS_STMT VARCHAR2(100) := 'SELECT VALUE FROM ILMCONFIG WHERE PARAM = :1';  
+    TBS_NAME VARCHAR2(30);
+  BEGIN
+    IF I_STAGE = ILM_CORE.HOT_STAGE THEN
+      EXECUTE IMMEDIATE GET_TBS_STMT INTO TBS_NAME USING 'HOT_TABLESPACE_NAME';
+    ELSIF I_STAGE = ILM_CORE.WARM_STAGE THEN
+      EXECUTE IMMEDIATE GET_TBS_STMT INTO TBS_NAME USING 'WARM_TABLESPACE_NAME';
+    ELSIF I_STAGE = ILM_CORE.COLD_STAGE THEN
+      EXECUTE IMMEDIATE GET_TBS_STMT INTO TBS_NAME USING 'COLD_TABLESPACE_NAME';
+    ELSIF I_STAGE = ILM_CORE.DORMANT_STAGE THEN
+      EXECUTE IMMEDIATE GET_TBS_STMT INTO TBS_NAME USING 'DORMANT_TABLESPACE_PREFIX';
+      TBS_NAME := TBS_NAME || to_char(JOB_TIME,'YYYYMMDD') ;
+    ELSE
+      raise_application_error(-20010, 'Cannot find tablespace name from stage ' || I_STAGE);
+    END IF;
+    
+    RETURN TBS_NAME;
+  END;
 END ILM_COMMON;
