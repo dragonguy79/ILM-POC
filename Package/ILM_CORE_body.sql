@@ -9,14 +9,29 @@ create or replace PACKAGE BODY ILM_CORE AS
       LOOP
         CURRENT_MOVE_SEQUENCE := managed_table.MOVESEQUENCE;
         
-        -- move data
-        RUN_TASK('ILM_CORE.MOVE_EXPIRED_PARTITIONS(''' || managed_table.TABLENAME || ''')', 100);
-        RUN_TASK('ILM_CORE.MOVE_EXPIRED_LOB(''' || managed_table.TABLENAME || ''')', 200);
+        FOR pRow in (select PARTITION_NAME, HIGH_VALUE from USER_TAB_PARTITIONS WHERE TABLESPACE_NAME=FROM_TBS AND TABLE_NAME=managed_table.TABLENAME)
+        LOOP
+          -- only work with expired partition
+          IF ILM_COMMON.IS_PARTITION_EXPIRED(pRow.HIGH_VALUE, ILM_COMMON.GET_RETENTION(managed_table.TABLENAME, FROM_STAGE), JOB_START_TSP) = 1 THEN
+            
+            -- move all subpartitions of selected partition
+            MOVE_SUBPARTITIONS(managed_table.TABLENAME, pRow.PARTITION_NAME);
+            
+            -- move subpartitioned lob
+            MOVE_SUBPARTITIONED_LOBS(managed_table.TABLENAME, pRow.PARTITION_NAME);
         
-        -- rebuild index
+            -- move subpartitioned index
+            MOVE_SUBPARTITIONED_INDEXES(managed_table.TABLENAME, pRow.PARTITION_NAME);
+            
+            -- rebuild partition index
+            REBUILD_PARTITIONED_INDEX(managed_table.TABLENAME);
+        
+          END IF;
+    
+        END LOOP;
+
+        -- rebuild global index
         RUN_TASK('ILM_CORE.REBUILD_GLOBAL_INDEX(''' || managed_table.TABLENAME || ''')', 300);
-        RUN_TASK('ILM_CORE.REBUILD_PARTITIONED_INDEX(''' || managed_table.TABLENAME || ''')', 400);
-        RUN_TASK('ILM_CORE.REBUILD_SUBPARTITIONED_INDEX(''' || managed_table.TABLENAME || ''')', 500);
 
       END LOOP;
   END;
@@ -26,15 +41,24 @@ create or replace PACKAGE BODY ILM_CORE AS
   -----------------------------------------------------------------------------------------------------------------
   PROCEDURE RUN_WARM2COLD_JOB AS
   BEGIN
-     FOR managed_table IN (SELECT TABLENAME, MOVESEQUENCE from ILMMANAGEDTABLE WHERE MOVESEQUENCE >= CURRENT_MOVE_SEQUENCE ORDER BY MOVESEQUENCE ASC) 
+     FOR managed_table IN (SELECT TABLENAME, TEMPTABLENAME, COLDTABLENAME, MOVESEQUENCE from ILMMANAGEDTABLE WHERE MOVESEQUENCE >= CURRENT_MOVE_SEQUENCE ORDER BY MOVESEQUENCE ASC) 
       LOOP
         CURRENT_MOVE_SEQUENCE := managed_table.MOVESEQUENCE;
         
+        FOR pRow in (select PARTITION_NAME, HIGH_VALUE from USER_TAB_PARTITIONS WHERE TABLESPACE_NAME=FROM_TBS AND TABLE_NAME=managed_table.TABLENAME)
+        LOOP
+            DBMS_OUTPUT.PUT_LINE('');
+            -- move partition to COLD
+            -- exchange source partition with temp table
+            -- exchange temp table with target partition
+            -- drop source partition
+        END LOOP;
         
-        
+        -- rebuild global index
+        RUN_TASK('ILM_CORE.REBUILD_GLOBAL_INDEX(''' || managed_table.COLDTABLENAME || ''')', 300);
       END LOOP;
   END;
- 
+
   -----------------------------------------------------------------------------------------------------------------
   -- Run job
   -----------------------------------------------------------------------------------------------------------------
@@ -126,6 +150,7 @@ create or replace PACKAGE BODY ILM_CORE AS
     
     EXCEPTION
     WHEN OTHERS THEN
+      -- update failed job status
       UPDATE ILMJOB SET STATUS=JOBSTATUS_FAILED, ENDTIME=SYSTIMESTAMP WHERE ID=CURRENT_JOB_ID;
       COMMIT;
       raise;
@@ -187,31 +212,6 @@ create or replace PACKAGE BODY ILM_CORE AS
     raise_application_error(-20010, ERROR_MESSAGE);
   END;
   
-  -----------------------------------------------------------------------------------------------------------------
-  -- Operation: Move expired partitions of a table from one tablespace to another tablespace
-    -- only subpartition that belongs to partition that has exceeded the retention plan will be moved
-  -----------------------------------------------------------------------------------------------------------------
-  PROCEDURE MOVE_EXPIRED_PARTITIONS(I_TABLE_NAME in VARCHAR2) AS
-  BEGIN
-    FOR pRow in (select PARTITION_NAME, HIGH_VALUE from USER_TAB_PARTITIONS WHERE TABLESPACE_NAME=FROM_TBS AND TABLE_NAME=I_TABLE_NAME)
-    LOOP
-      -- only move subpartitions that are older than retention plan
-      IF ILM_COMMON.IS_PARTITION_EXPIRED(pRow.HIGH_VALUE, ILM_COMMON.GET_RETENTION(I_TABLE_NAME, FROM_STAGE), JOB_START_TSP) = 1 THEN
-        -- update metadata in ILMMANAGEDTABLE
-        ILM_COMMON.UPDATE_ILMTABLE_STATUS(I_TABLE_NAME, FROM_STAGE, ILMTABLESTATUS_PARTITIONMOVE);
-        
-        -- move all subpartitions of selected partition
-        MOVE_SUBPARTITIONS(I_TABLE_NAME, pRow.PARTITION_NAME);
-
-        -- update partition metadata [TABLESPACE_NAME]
-        EXECUTE IMMEDIATE 'ALTER TABLE ' || I_TABLE_NAME || ' MODIFY DEFAULT ATTRIBUTES FOR PARTITION ' || pRow.PARTITION_NAME || ' ' || ILM_COMMON.GET_COMPRESSION_CLAUSE(I_TABLE_NAME,TO_STAGE) || ' TABLESPACE ' || TO_TBS;
-        
-        -- update metadata in ILMMANAGEDTABLE
-        ILM_COMMON.UPDATE_ILMTABLE_STATUS(I_TABLE_NAME, FROM_STAGE, ILMTABLESTATUS_VALID);
-      END IF;
-
-    END LOOP;
-  END;
 
   ----------------------------------------------------------------------------------------------------------------
   -- Operation: Move all subpartitions of a sinle partition, from one tablespace to another tablespace
@@ -220,54 +220,48 @@ create or replace PACKAGE BODY ILM_CORE AS
   BEGIN
     FOR spRow in (select SUBPARTITION_NAME from USER_TAB_SUBPARTITIONS WHERE TABLESPACE_NAME=FROM_TBS AND PARTITION_NAME=I_PARTITION_NAME)
     LOOP
+      -- update status in ILMMANAGEDTABLE
+      ILM_COMMON.UPDATE_ILMTABLE_STATUS(I_TABLE_NAME, FROM_STAGE, ILMTABLESTATUS_PARTITIONMOVE);
+        
       LOG_MESSAGE('Move subpartition ' || I_TABLE_NAME || '.' || spRow.SUBPARTITION_NAME || ' from tablespace ' || FROM_TBS ||' to tablespace '|| TO_TBS);
       EXECUTE IMMEDIATE 'ALTER TABLE ' || I_TABLE_NAME || ' MOVE SUBPARTITION ' || spRow.SUBPARTITION_NAME || ILM_COMMON.GET_COMPRESSION_CLAUSE(I_TABLE_NAME,TO_STAGE) || ' TABLESPACE ' || TO_TBS || ILM_COMMON.GET_ONLINE_MOVE_CLAUSE() || ILM_COMMON.GET_PARALLEL_CLAUSE();
+       
+      -- update status in ILMMANAGEDTABLE
+      ILM_COMMON.UPDATE_ILMTABLE_STATUS(I_TABLE_NAME, FROM_STAGE, ILMTABLESTATUS_VALID);
     END LOOP;
+    
+    -- update partition metadata [TABLESPACE_NAME]
+    EXECUTE IMMEDIATE 'ALTER TABLE ' || I_TABLE_NAME || ' MODIFY DEFAULT ATTRIBUTES FOR PARTITION ' || I_PARTITION_NAME || ' ' || ILM_COMMON.GET_COMPRESSION_CLAUSE(I_TABLE_NAME,TO_STAGE) || ' TABLESPACE ' || TO_TBS;
+      
   END;
 
-
-  -----------------------------------------------------------------------------------------------------------------
-  -- Operation: Move expired lobs of a table from one tablespace to another tablespace
-  -----------------------------------------------------------------------------------------------------------------
-  PROCEDURE MOVE_EXPIRED_LOB(I_TABLE_NAME in VARCHAR2) AS
-  BEGIN
-    FOR pRow in (
-      select lob.lob_partition_name, tab.HIGH_VALUE, lob.column_name, lob.partition_name
-        from USER_TAB_PARTITIONS tab INNER JOIN USER_LOB_PARTITIONS lob on lob.partition_name=tab.partition_name
-        WHERE tab.TABLE_NAME=I_TABLE_NAME
-    )
-    LOOP
-
-      -- only move subpartitions that are older than retention plan
-      IF ILM_COMMON.IS_PARTITION_EXPIRED(pRow.HIGH_VALUE, ILM_COMMON.GET_RETENTION(I_TABLE_NAME, FROM_STAGE), JOB_START_TSP) = 1 THEN
-        -- update metadata in ILMMANAGEDTABLE
-        ILM_COMMON.UPDATE_ILMTABLE_STATUS(I_TABLE_NAME, FROM_STAGE, ILMTABLESTATUS_LOBMOVE);
-        
-        -- move subpartitioned lob
-        MOVE_SUBPARTITIONED_LOBS(I_TABLE_NAME, pRow.LOB_PARTITION_NAME);
-        
-        -- update partition metadata [TABLESPACE_NAME]
-        EXECUTE IMMEDIATE 'ALTER TABLE ' || I_TABLE_NAME || ' MODIFY DEFAULT ATTRIBUTES FOR PARTITION ' || pRow.PARTITION_NAME || ' LOB(' || pRow.COLUMN_NAME || ')(TABLESPACE ' || TO_TBS || ')';
-        
-        -- update metadata in ILMMANAGEDTABLE
-        ILM_COMMON.UPDATE_ILMTABLE_STATUS(I_TABLE_NAME, FROM_STAGE, ILMTABLESTATUS_VALID);
-      END IF;
-      
-      
-    END LOOP;
-  END;
 
   ----------------------------------------------------------------------------------------------------------------
   -- Operation: Move all subpartitioned lobs of a sinle partition, from one tablespace to another tablespace
   -----------------------------------------------------------------------------------------------------------------
-  PROCEDURE MOVE_SUBPARTITIONED_LOBS(I_TABLE_NAME in VARCHAR2, I_LOB_PARTITION_NAME in VARCHAR2) AS
+  PROCEDURE MOVE_SUBPARTITIONED_LOBS(I_TABLE_NAME in VARCHAR2, I_PARTITION_NAME in VARCHAR2) AS
+    COLUMN_NAME varchar2(30);
   BEGIN
     FOR spRow in (
-      SELECT SUBPARTITION_NAME, COLUMN_NAME from USER_LOB_SUBPARTITIONS 
-        WHERE LOB_PARTITION_NAME=I_LOB_PARTITION_NAME AND TABLESPACE_NAME=FROM_TBS)
+      SELECT subpart.SUBPARTITION_NAME, subpart.COLUMN_NAME 
+        from USER_LOB_SUBPARTITIONS subpart inner join USER_LOB_PARTITIONS part on subpart.LOB_PARTITION_NAME=part.LOB_PARTITION_NAME
+        WHERE part.PARTITION_NAME=I_PARTITION_NAME AND subpart.TABLESPACE_NAME=FROM_TBS AND subpart.TABLE_NAME=I_TABLE_NAME)
     LOOP
+      COLUMN_NAME := spRow.COLUMN_NAME;
+      -- update metadata in ILMMANAGEDTABLE
+      ILM_COMMON.UPDATE_ILMTABLE_STATUS(I_TABLE_NAME, FROM_STAGE, ILMTABLESTATUS_LOBMOVE);
+    
       LOG_MESSAGE('Move subpartition lob ' || I_TABLE_NAME || '.' || spRow.SUBPARTITION_NAME || '(column:' || spRow.COLUMN_NAME || ') from tablespace ' || FROM_TBS ||' to tablespace '|| TO_TBS);
       EXECUTE IMMEDIATE 'ALTER TABLE ' || I_TABLE_NAME || ' MOVE SUBPARTITION ' || spRow.SUBPARTITION_NAME || ' LOB (' || spRow.COLUMN_NAME || ') STORE AS SECUREFILE (TABLESPACE ' || TO_TBS || ')';
+      
+      -- update metadata in ILMMANAGEDTABLE
+      ILM_COMMON.UPDATE_ILMTABLE_STATUS(I_TABLE_NAME, FROM_STAGE, ILMTABLESTATUS_VALID);
+    END LOOP;
+    
+    -- update partition metadata [TABLESPACE_NAME]
+    FOR pRow in (SELECT COLUMN_NAME FROM USER_LOB_PARTITIONS WHERE TABLE_NAME=I_TABLE_NAME AND PARTITION_NAME=I_PARTITION_NAME)
+    LOOP
+      EXECUTE IMMEDIATE 'ALTER TABLE ' || I_TABLE_NAME || ' MODIFY DEFAULT ATTRIBUTES FOR PARTITION ' || I_PARTITION_NAME || ' LOB(' || pRow.COLUMN_NAME || ')(TABLESPACE ' || TO_TBS || ')';
     END LOOP;
   END;
   
@@ -309,48 +303,20 @@ create or replace PACKAGE BODY ILM_CORE AS
     ILM_COMMON.UPDATE_ILMTABLE_STATUS(TABLE_NAME, FROM_STAGE, ILMTABLESTATUS_VALID);
   END;
 
- -----------------------------------------------------------------------------------------------------------------
-  -- Operation: Move and rebuild all invalid local subpartitioned indexes
-  -----------------------------------------------------------------------------------------------------------------
-  PROCEDURE REBUILD_SUBPARTITIONED_INDEX(TABLE_NAME in VARCHAR2) AS
-    HIGH_VALUE_C VARCHAR2(100);
-    HIGH_VALUE_T TIMESTAMP;
-    RETENTION_MONTH NUMBER(3, 0);
-  BEGIN
-    FOR pRow in (select part.PARTITION_NAME, part.HIGH_VALUE, part.INDEX_NAME from USER_IND_PARTITIONS part INNER JOIN USER_INDEXES ind on ind.INDEX_NAME=part.INDEX_NAME WHERE part.TABLESPACE_NAME=FROM_TBS AND ind.TABLE_NAME=TABLE_NAME ORDER BY part.INDEX_NAME)
-    LOOP
-     
-      -- get high value in TIMESTAMP from LONG
-      HIGH_VALUE_C := pRow.HIGH_VALUE;  -- convert to VARCHAR2
-      IF HIGH_VALUE_C = 'MAXVALUE' THEN   -- do not process partition with high value=MAXVALUE
-        CONTINUE;
-      END IF;
-      EXECUTE IMMEDIATE 'SELECT '||HIGH_VALUE_C||' FROM DUAL' INTO HIGH_VALUE_T;     -- convert to TIMESTAMP
-    
-      -- get retention plan
-      RETENTION_MONTH := ILM_COMMON.GET_RETENTION(TABLE_NAME, FROM_STAGE);
-      
-      -- only move subpartitioned index that are older than retention plan
-      IF HIGH_VALUE_T < ADD_MONTHS(JOB_START_TSP, -RETENTION_MONTH)  THEN
-      
-        -- update metadata in ILMMANAGEDTABLE
-        ILM_COMMON.UPDATE_ILMTABLE_STATUS(TABLE_NAME, FROM_STAGE, ILMTABLESTATUS_INDEXREBUILD);
-        
-        -- move and rebuild 2-level subpartitioned index
-        FOR spRow in (SELECT INDEX_NAME, SUBPARTITION_NAME FROM USER_IND_SUBPARTITIONS WHERE PARTITION_NAME=pRow.PARTITION_NAME AND (TABLESPACE_NAME=FROM_TBS OR (TABLESPACE_NAME=TO_TBS AND STATUS='UNUSABLE') )) 
-        LOOP
-          LOG_MESSAGE('Rebuild subpartition ' || spRow.SUBPARTITION_NAME || ' index ' || TABLE_NAME || '.' || spRow.INDEX_NAME);
-          EXECUTE IMMEDIATE 'ALTER INDEX ' || spRow.INDEX_NAME || ' REBUILD SUBPARTITION '|| spRow.SUBPARTITION_NAME || ' TABLESPACE ' || TO_TBS || ILM_COMMON.GET_PARALLEL_CLAUSE();
-        END LOOP;
-        
-        -- update partition metadata [TABLESPACE_NAME]
-        EXECUTE IMMEDIATE 'ALTER INDEX ' || pRow.INDEX_NAME || ' MODIFY DEFAULT ATTRIBUTES FOR PARTITION ' || pRow.PARTITION_NAME || ' TABLESPACE ' || TO_TBS;
-      END IF;
-    
-    END LOOP;
-    
-    -- update metadata in ILMMANAGEDTABLE
-    ILM_COMMON.UPDATE_ILMTABLE_STATUS(TABLE_NAME, FROM_STAGE, ILMTABLESTATUS_VALID);
-  END;
+ 
   
+  ----------------------------------------------------------------------------------------------------------------
+  -- Operation: Move all subpartitions of a sinle partition, from one tablespace to another tablespace
+  -----------------------------------------------------------------------------------------------------------------
+  PROCEDURE MOVE_SUBPARTITIONED_INDEXES(I_TABLE_NAME in VARCHAR2, I_PARTITION_NAME in VARCHAR2) AS
+  BEGIN
+    FOR spRow in (
+      SELECT subPart.INDEX_NAME, subPart.SUBPARTITION_NAME 
+      FROM USER_IND_SUBPARTITIONS subPart
+      WHERE PARTITION_NAME=I_PARTITION_NAME AND (TABLESPACE_NAME=FROM_TBS OR (TABLESPACE_NAME=TO_TBS AND STATUS='UNUSABLE') )) 
+    LOOP
+      LOG_MESSAGE('Rebuild subpartition ' || spRow.SUBPARTITION_NAME || ' index ' || I_TABLE_NAME || '.' || spRow.INDEX_NAME);
+      EXECUTE IMMEDIATE 'ALTER INDEX ' || spRow.INDEX_NAME || ' REBUILD SUBPARTITION '|| spRow.SUBPARTITION_NAME || ' TABLESPACE ' || TO_TBS || ILM_COMMON.GET_PARALLEL_CLAUSE();
+    END LOOP;
+  END;
 END ILM_CORE;
