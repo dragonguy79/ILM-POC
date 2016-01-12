@@ -27,13 +27,16 @@ create or replace PACKAGE BODY ILM_CORE AS
             RUN_TASK('ILM_CORE.REBUILD_SUBPART_INDEX(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME||''')', 300);
             
             -- update tablespace attribute of partition
-            RUN_TASK('ILM_CORE.MODIFY_PARTITION_TBS_ATTRIBUTE(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME||''')', 400);
+            RUN_TASK('ILM_CORE.MODIFY_PARTITION_TBS(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||TO_TBS||''')', 400);
+            
+            -- update tablespace attribute of partitioned index
+            RUN_TASK('ILM_CORE.MODIFY_PARTITION_INDEX_TBS(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||TO_TBS||''')', 500);
           END IF;
     
         END LOOP;
 
         -- rebuild global index
-        RUN_TASK('ILM_CORE.REBUILD_GLOBAL_INDEX(''' || managed_table.TABLENAME || ''')', 500);
+        RUN_TASK('ILM_CORE.REBUILD_GLOBAL_INDEX(''' || managed_table.TABLENAME || ''')', 600);
 
       END LOOP;
   END;
@@ -84,6 +87,7 @@ create or replace PACKAGE BODY ILM_CORE AS
         
         -- rebuild global index
         RUN_TASK('ILM_CORE.REBUILD_GLOBAL_INDEX(''' || managed_table.COLDTABLENAME || ''')', 800);
+        RUN_TASK('ILM_CORE.REBUILD_GLOBAL_INDEX(''' || managed_table.TABLENAME || ''')', 900);
       END LOOP;
   END;
 
@@ -246,11 +250,11 @@ create or replace PACKAGE BODY ILM_CORE AS
   -- Update attribute of partition
     -- Partition does not contain any data since they are stored in subpartitions, but still we need to update the attribute for correctness.
   -----------------------------------------------------------------------------------------------------------------
-  PROCEDURE MODIFY_PARTITION_TBS_ATTRIBUTE(I_TABLE_NAME in VARCHAR2, I_PARTITION_NAME in VARCHAR2) AS
+  PROCEDURE MODIFY_PARTITION_TBS(I_TABLE_NAME in VARCHAR2, I_PARTITION_NAME in VARCHAR2, I_TO_TBS in VARCHAR2) AS
   BEGIN
     -- update partition metadata [TABLESPACE_NAME]
-    LOG_MESSAGE('Change attribute of partition ' || I_TABLE_NAME || '.' || I_PARTITION_NAME || ' to tablespace '|| TO_TBS);
-    EXECUTE IMMEDIATE 'ALTER TABLE ' || I_TABLE_NAME || ' MODIFY DEFAULT ATTRIBUTES FOR PARTITION ' || I_PARTITION_NAME || ' ' || ILM_COMMON.GET_COMPRESSION_CLAUSE(I_TABLE_NAME,TO_STAGE) || ' TABLESPACE ' || TO_TBS;
+    LOG_MESSAGE('Modify partition attribute ' || I_TABLE_NAME || '.' || I_PARTITION_NAME || ' to tablespace '|| I_TO_TBS);
+    EXECUTE IMMEDIATE 'ALTER TABLE ' || I_TABLE_NAME || ' MODIFY DEFAULT ATTRIBUTES FOR PARTITION ' || I_PARTITION_NAME || ' ' || ILM_COMMON.GET_COMPRESSION_CLAUSE(I_TABLE_NAME,TO_STAGE) || ' TABLESPACE ' || I_TO_TBS;
   END;
   
   ----------------------------------------------------------------------------------------------------------------
@@ -278,6 +282,7 @@ create or replace PACKAGE BODY ILM_CORE AS
     -- update partition metadata [TABLESPACE_NAME]
     FOR pRow in (SELECT COLUMN_NAME FROM USER_LOB_PARTITIONS WHERE TABLE_NAME=I_TABLE_NAME AND PARTITION_NAME=I_PARTITION_NAME)
     LOOP
+      LOG_MESSAGE('Modify subpartitioned lob attribute ' || I_TABLE_NAME || '.' || I_PARTITION_NAME || '[column: '|| pRow.COLUMN_NAME ||'] to tablespace '|| I_TO_TBS);
       EXECUTE IMMEDIATE 'ALTER TABLE ' || I_TABLE_NAME || ' MODIFY DEFAULT ATTRIBUTES FOR PARTITION ' || I_PARTITION_NAME || ' LOB(' || pRow.COLUMN_NAME || ')(TABLESPACE ' || I_TO_TBS || ')';
     END LOOP;
   END;
@@ -308,11 +313,29 @@ create or replace PACKAGE BODY ILM_CORE AS
   BEGIN
     FOR spRow in (
       SELECT subPart.INDEX_NAME, subPart.SUBPARTITION_NAME 
-      FROM USER_IND_SUBPARTITIONS subPart
-      WHERE PARTITION_NAME=I_PARTITION_NAME AND TABLESPACE_NAME=I_FROM_TBS)
+      from USER_IND_SUBPARTITIONS subPart 
+      inner join USER_INDEXES ind on subPart.index_name=ind.index_name
+      where ind.table_name=I_TABLE_NAME AND subPart.partition_name=I_PARTITION_NAME AND subPart.TABLESPACE_NAME=I_FROM_TBS)
     LOOP
-      LOG_MESSAGE('Rebuild index ' || I_TABLE_NAME || '.' || spRow.INDEX_NAME || ' in subpartition ' || spRow.SUBPARTITION_NAME || ', and move it to tablespace ' || I_TO_TBS);
+      LOG_MESSAGE('Rebuild index ' || spRow.INDEX_NAME || ' of subpartition '|| I_TABLE_NAME || '.' || spRow.SUBPARTITION_NAME || ', and move it to tablespace ' || I_TO_TBS);
       EXECUTE IMMEDIATE 'ALTER INDEX ' || spRow.INDEX_NAME || ' REBUILD SUBPARTITION '|| spRow.SUBPARTITION_NAME || ' TABLESPACE ' || I_TO_TBS || ILM_COMMON.GET_PARALLEL_CLAUSE();
+    END LOOP;
+  END;
+  
+  ----------------------------------------------------------------------------------------------------------------
+  -- Update attribute of partition index
+    -- Partition does not contain any data since they are stored in subpartitions, but still we need to update the attribute for correctness.
+  -----------------------------------------------------------------------------------------------------------------
+  PROCEDURE MODIFY_PARTITION_INDEX_TBS(I_TABLE_NAME in VARCHAR2, I_PARTITION_NAME in VARCHAR2, I_TO_TBS in VARCHAR2) AS
+  BEGIN
+    FOR spRow in (
+      select part.index_name
+      from USER_IND_PARTITIONS part
+      inner join USER_INDEXES ind on part.index_name = ind.index_name
+      where ind.table_name=I_TABLE_NAME AND part.partition_name = I_PARTITION_NAME)
+    LOOP
+      LOG_MESSAGE('Change attribute of partitioned index ' || I_TABLE_NAME || '.' || spRow.INDEX_NAME || ' to tablespace '|| I_TO_TBS);
+      EXECUTE IMMEDIATE 'ALTER INDEX ' || spRow.INDEX_NAME  || ' MODIFY DEFAULT ATTRIBUTES FOR PARTITION ' || I_PARTITION_NAME || ' TABLESPACE ' || I_TO_TBS;
     END LOOP;
   END;
   
@@ -326,7 +349,7 @@ create or replace PACKAGE BODY ILM_CORE AS
       FROM USER_IND_SUBPARTITIONS subPart
       WHERE PARTITION_NAME=I_PARTITION_NAME AND STATUS='UNUSABLE') 
     LOOP
-      LOG_MESSAGE('Rebuild index ' || I_TABLE_NAME || '.' || spRow.INDEX_NAME || ' in subpartition ' || spRow.SUBPARTITION_NAME);
+      LOG_MESSAGE('Rebuild index ' || spRow.INDEX_NAME || ' of subpartition ' || I_TABLE_NAME || '.'|| spRow.SUBPARTITION_NAME);
       EXECUTE IMMEDIATE 'ALTER INDEX ' || spRow.INDEX_NAME || ' REBUILD SUBPARTITION '|| spRow.SUBPARTITION_NAME || ILM_COMMON.GET_PARALLEL_CLAUSE();
     END LOOP;
   END;
@@ -339,6 +362,7 @@ create or replace PACKAGE BODY ILM_CORE AS
   BEGIN
     EXECUTE IMMEDIATE 'SELECT COUNT(1) FROM USER_TAB_PARTITIONS WHERE TABLE_NAME=:1 AND PARTITION_NAME=:2' INTO PARTITION_EXIST USING I_TABLE_NAME, I_PARTITION_NAME;
     IF (PARTITION_EXIST=0) THEN
+      LOG_MESSAGE('Create a new partition ' || I_TABLE_NAME || '.' || I_PARTITION_NAME || ' with high value ' || I_HIGH_VALUE);
       EXECUTE IMMEDIATE 'ALTER TABLE '||I_TABLE_NAME||' SPLIT PARTITION P9999_12 AT (''' ||I_HIGH_VALUE|| ''') INTO (PARTITION '||I_PARTITION_NAME||', PARTITION P9999_12) '||ILM_COMMON.GET_PARALLEL_CLAUSE();
     END IF;
   END;
