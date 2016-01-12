@@ -45,13 +45,10 @@ create or replace PACKAGE BODY ILM_CORE AS
   -- Job to move data from WARM to COLD
   -----------------------------------------------------------------------------------------------------------------
   PROCEDURE RUN_WARM2COLD_JOB AS
-    COLD_TABLE_NAME VARCHAR2(30);
-    TEMP_TABLE_NAME VARCHAR2(30);
   BEGIN
      FOR managed_table IN (SELECT TABLENAME, TEMPTABLENAME, COLDTABLENAME, MOVESEQUENCE from ILMMANAGEDTABLE WHERE MOVESEQUENCE >= CURRENT_MOVE_SEQUENCE ORDER BY MOVESEQUENCE ASC) 
       LOOP
         CURRENT_MOVE_SEQUENCE := managed_table.MOVESEQUENCE;
-        EXECUTE IMMEDIATE 'SELECT TEMPTABLENAME FROM ILMMANAGEDTABLE WHERE TABLENAME = :1' INTO TEMP_TABLE_NAME USING managed_table.TABLENAME;
         
         FOR pRow in (
           select PARTITION_NAME, HIGH_VALUE from USER_TAB_PARTITIONS 
@@ -60,25 +57,23 @@ create or replace PACKAGE BODY ILM_CORE AS
         LOOP
           -- only work with expired partition
           IF ILM_COMMON.IS_PARTITION_EXPIRED(pRow.HIGH_VALUE, ILM_COMMON.GET_RETENTION(managed_table.TABLENAME, FROM_STAGE), JOB_START_TSP) = 1 THEN
-            EXECUTE IMMEDIATE 'SELECT COLDTABLENAME FROM ILMMANAGEDTABLE WHERE TABLENAME = :1' INTO COLD_TABLE_NAME USING managed_table.TABLENAME;
-            
             -- create partition in COLD tables
-            RUN_TASK('ILM_CORE.CREATE_PARTITION(''' || COLD_TABLE_NAME || ''', '''||pRow.PARTITION_NAME || ''', '||pRow.HIGH_VALUE||')', 100);
+            RUN_TASK('ILM_CORE.CREATE_PARTITION(''' || managed_table.COLDTABLENAME || ''', '''||pRow.PARTITION_NAME || ''', '||pRow.HIGH_VALUE||')', 100);
             
             -- move all subpartitions of selected partition
             RUN_TASK('ILM_CORE.MOVE_SUBPARTITION(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME||''')', 200);
             
             -- exchange warm partition with temporary table
-            RUN_TASK('ILM_CORE.EXCHANGE_PARTITION(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||TEMP_TABLE_NAME||''')', 300);
+            RUN_TASK('ILM_CORE.EXCHANGE_PARTITION(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||managed_table.TEMPTABLENAME||''')', 300);
 
             -- exchange cold partition to temporary table
-            RUN_TASK('ILM_CORE.EXCHANGE_PARTITION(''' || COLD_TABLE_NAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||TEMP_TABLE_NAME||''')', 400);
+            RUN_TASK('ILM_CORE.EXCHANGE_PARTITION(''' || managed_table.COLDTABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||managed_table.TEMPTABLENAME||''')', 400);
             
             -- move subpartitioned lob
-            RUN_TASK('ILM_CORE.MOVE_SUBPARTITIONED_LOB(''' || COLD_TABLE_NAME || ''', '''||pRow.PARTITION_NAME|| ''', '''|| ILM_COMMON.GET_TABLESPACE_NAME(HOT_STAGE)|| ''', '''|| TO_TBS||''')', 500);
+            RUN_TASK('ILM_CORE.MOVE_SUBPARTITIONED_LOB(''' || managed_table.COLDTABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''|| ILM_COMMON.GET_TABLESPACE_NAME(HOT_STAGE)|| ''', '''|| TO_TBS||''')', 500);
 
             -- rebuild subpartitioned index
-            RUN_TASK('ILM_CORE.REBUILD_SUBPART_INDEX(''' || COLD_TABLE_NAME || ''', '''||pRow.PARTITION_NAME||''')', 600);
+            RUN_TASK('ILM_CORE.REBUILD_SUBPART_INDEX(''' || managed_table.COLDTABLENAME || ''', '''||pRow.PARTITION_NAME||''')', 600);
             
             -- drop source partition
             RUN_TASK('ILM_CORE.DROP_PARTITION(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME || ''')', 700);
@@ -87,13 +82,40 @@ create or replace PACKAGE BODY ILM_CORE AS
         
         -- rebuild global index of COLD table
         RUN_TASK('ILM_CORE.REBUILD_GLOBAL_INDEX(''' || managed_table.COLDTABLENAME || ''')', 800);
-        
-        -- No need to rebuild global index of HOT table because it will be orphaned and cleaned up automatically
-        --RUN_TASK('ILM_CORE.REBUILD_GLOBAL_INDEX(''' || managed_table.TABLENAME || ''')', 900);
+        RUN_TASK('ILM_CORE.REBUILD_GLOBAL_INDEX(''' || managed_table.TABLENAME || ''')', 900);
         
       END LOOP;
   END;
 
+  -----------------------------------------------------------------------------------------------------------------
+  -- Job to move data from COLD to DORMANT
+  -----------------------------------------------------------------------------------------------------------------
+  PROCEDURE RUN_COLD2DORMANT_JOB AS
+  BEGIN
+     FOR managed_table IN (SELECT TABLENAME, TEMPTABLENAME, MOVESEQUENCE from ILMMANAGEDTABLE WHERE MOVESEQUENCE >= CURRENT_MOVE_SEQUENCE ORDER BY MOVESEQUENCE ASC) 
+      LOOP
+        CURRENT_MOVE_SEQUENCE := managed_table.MOVESEQUENCE;
+        
+        FOR pRow in (
+          select PARTITION_NAME, HIGH_VALUE from USER_TAB_PARTITIONS 
+          WHERE TABLESPACE_NAME=FROM_TBS AND TABLE_NAME=managed_table.TABLENAME
+          ORDER BY PARTITION_POSITION)
+        LOOP
+          -- only work with expired partition
+          IF ILM_COMMON.IS_PARTITION_EXPIRED(pRow.HIGH_VALUE, ILM_COMMON.GET_RETENTION(managed_table.TABLENAME, FROM_STAGE), JOB_START_TSP) = 1 THEN
+            
+            -- create table to store partition data in DORMANT tbs
+            RUN_TASK('ILM_CORE.COPY_TEMP_TABLE(''' || managed_table.TABLENAME || ''', '''||TO_TBS || ''', '''||pRow.PARTITION_NAME||''')', 100);
+            
+
+          END IF;
+        END LOOP;
+
+        
+      END LOOP;
+  END;
+  
+  
   -----------------------------------------------------------------------------------------------------------------
   -- Run job
   -----------------------------------------------------------------------------------------------------------------
@@ -165,12 +187,11 @@ create or replace PACKAGE BODY ILM_CORE AS
     ELSIF I_JOB = WARM2COLD_JOB THEN
       RUN_WARM2COLD_JOB;
     ELSIF I_JOB = COLD2DORMANT_JOB THEN
-      RUN_HOT2WARM_JOB;
+      RUN_COLD2DORMANT_JOB;
     ELSIF I_JOB = HOT2COLD_JOB THEN
       RUN_HOT2WARM_JOB;
     END IF;
    
-    
     CURRENT_MOVE_SEQUENCE := null;
     -- job is compoleted
     UPDATE ILMJOB SET STATUS = JOBSTATUS_ENDED, ENDTIME = SYSTIMESTAMP WHERE ID = CURRENT_JOB_ID;
@@ -389,5 +410,43 @@ create or replace PACKAGE BODY ILM_CORE AS
     EXECUTE IMMEDIATE'ALTER TABLE ' || I_TABLE_NAME || ' DROP PARTITION '|| I_PARTITION_NAME || ' UPDATE INDEXES';
   END;
 
+  -----------------------------------------------------------------------------------------------------------------
+  -- Create a copy of temporary table in a specific tablespace
+  -----------------------------------------------------------------------------------------------------------------
+  PROCEDURE COPY_TEMP_TABLE(I_TABLE_NAME in VARCHAR2, I_TO_TBS IN VARCHAR2, SUFFIX IN VARCHAR2) AS
+    TEMP_TABLE_NAME VARCHAR2(30);
+    NEW_TABLE_NAME VARCHAR2(30);
+    EXISTING_TBS_NAME VARCHAR2(30);
+    PK_NAME VARCHAR2(30);
+    NEW_PK_NAME VARCHAR2(30);
+    CREATE_STATEMENT VARCHAR2(8000);
+  BEGIN
+    SELECT TEMPTABLENAME INTO TEMP_TABLE_NAME FROM ILMMANAGEDTABLE WHERE TABLENAME=I_TABLE_NAME;
+  
+    -- set parameter to remove uneeded constraints in DDL generation
+    DBMS_METADATA.SET_TRANSFORM_PARAM (DBMS_METADATA.SESSION_TRANSFORM,'STORAGE',false);
+    DBMS_METADATA.SET_TRANSFORM_PARAM (DBMS_METADATA.SESSION_TRANSFORM,'TABLESPACE',true);
+    DBMS_METADATA.SET_TRANSFORM_PARAM (DBMS_METADATA.SESSION_TRANSFORM,'SEGMENT_ATTRIBUTES', true);
+    DBMS_METADATA.SET_TRANSFORM_PARAM (DBMS_METADATA.SESSION_TRANSFORM,'REF_CONSTRAINTS', false);
+    DBMS_METADATA.SET_TRANSFORM_PARAM (DBMS_METADATA.SESSION_TRANSFORM,'CONSTRAINTS', false);
+    CREATE_STATEMENT := DBMS_METADATA.GET_DDL('TABLE', TEMP_TABLE_NAME);
+
+    -- replace table name
+    NEW_TABLE_NAME := SUBSTR(I_TABLE_NAME, 1, 30 - length(SUFFIX)) || SUFFIX;
+    CREATE_STATEMENT := REGEXP_REPLACE(CREATE_STATEMENT, '"'||TEMP_TABLE_NAME||'"', '"'||NEW_TABLE_NAME||'"');
+    
+    -- replace tablespace
+    SELECT TABLESPACE_NAME INTO EXISTING_TBS_NAME FROM USER_TABLES WHERE TABLE_NAME=TEMP_TABLE_NAME;
+    CREATE_STATEMENT := REGEXP_REPLACE(CREATE_STATEMENT,  '"'||EXISTING_TBS_NAME||'"', '"'||I_TO_TBS||'"');
+
+    -- commented, because constraint are not needed for exchange direction table
+    -- replace primary key name
+    --    select CONSTRAINT_NAME into PK_NAME from ALL_CONSTRAINTS where TABLE_NAME = I_TABLE_NAME and CONSTRAINT_TYPE = 'P' and rownum<=1;
+    --    NEW_PK_NAME := SUBSTR(PK_NAME, 1, 30 - length(SUFFIX)) || SUFFIX;
+    --    CREATE_STATEMENT :=  REGEXP_REPLACE(CREATE_STATEMENT, PK_NAME, NEW_PK_NAME);
+
+    LOG_MESSAGE('Create new table ' || NEW_TABLE_NAME|| ' in tablespace ' || I_TO_TBS);
+    EXECUTE IMMEDIATE CREATE_STATEMENT;
+  END;
   
 END ILM_CORE;
