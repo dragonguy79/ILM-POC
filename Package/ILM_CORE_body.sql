@@ -85,9 +85,12 @@ create or replace PACKAGE BODY ILM_CORE AS
           END IF;
         END LOOP;
         
-        -- rebuild global index
+        -- rebuild global index of COLD table
         RUN_TASK('ILM_CORE.REBUILD_GLOBAL_INDEX(''' || managed_table.COLDTABLENAME || ''')', 800);
-        RUN_TASK('ILM_CORE.REBUILD_GLOBAL_INDEX(''' || managed_table.TABLENAME || ''')', 900);
+        
+        -- No need to rebuild global index of HOT table because it will be orphaned and cleaned up automatically
+        --RUN_TASK('ILM_CORE.REBUILD_GLOBAL_INDEX(''' || managed_table.TABLENAME || ''')', 900);
+        
       END LOOP;
   END;
 
@@ -383,7 +386,7 @@ create or replace PACKAGE BODY ILM_CORE AS
   PROCEDURE DROP_PARTITION(I_TABLE_NAME in VARCHAR2, I_PARTITION_NAME in VARCHAR2) AS
   BEGIN
     LOG_MESSAGE('Drop partition ' || I_TABLE_NAME|| '.' || I_PARTITION_NAME);
-    EXECUTE IMMEDIATE'ALTER TABLE ' || I_TABLE_NAME || ' DROP PARTITION '|| I_PARTITION_NAME;      
+    EXECUTE IMMEDIATE'ALTER TABLE ' || I_TABLE_NAME || ' DROP PARTITION '|| I_PARTITION_NAME || ' UPDATE INDEXES';
   END;
 
   
