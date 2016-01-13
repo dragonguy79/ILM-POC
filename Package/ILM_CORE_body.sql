@@ -18,13 +18,10 @@ create or replace PACKAGE BODY ILM_CORE AS
           IF ILM_COMMON.IS_PARTITION_EXPIRED(pRow.HIGH_VALUE, ILM_COMMON.GET_RETENTION(managed_table.TABLENAME, FROM_STAGE), JOB_START_TSP) = 1 THEN
             
             -- move all subpartitions of selected partition
-            RUN_TASK('ILM_CORE.MOVE_SUBPARTITION(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME||''')', 100);
+            RUN_TASK('ILM_CORE.MOVE_SUBPARTITION(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||FROM_TBS|| ''', '''||TO_TBS|| ''', '''||ILM_COMMON.GET_COMPRESSION_CLAUSE(managed_table.TABLENAME,TO_STAGE)||''')', 100);
 
-            -- move subpartitioned index
-            RUN_TASK('ILM_CORE.MOVE_SUBPART_INDEX(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||FROM_TBS|| ''', '''||TO_TBS||''')', 200);
-            
-            -- rebuild subpartitioned index
-            RUN_TASK('ILM_CORE.REBUILD_SUBPART_INDEX(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME||''')', 300);
+            -- move and rebuild subpartitioned index
+            RUN_TASK('ILM_CORE.MOVE_REBUILD_SUBPART_INDEX(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||FROM_TBS|| ''', '''||TO_TBS||''')', 200);
             
             -- update tablespace attribute of partition
             RUN_TASK('ILM_CORE.MODIFY_PARTITION_TBS(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||TO_TBS||''')', 400);
@@ -61,7 +58,7 @@ create or replace PACKAGE BODY ILM_CORE AS
             RUN_TASK('ILM_CORE.CREATE_PARTITION(''' || managed_table.COLDTABLENAME || ''', '''||pRow.PARTITION_NAME || ''', '||pRow.HIGH_VALUE||')', 100);
             
             -- move all subpartitions of selected partition
-            RUN_TASK('ILM_CORE.MOVE_SUBPARTITION(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME||''')', 200);
+            RUN_TASK('ILM_CORE.MOVE_SUBPARTITION(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||FROM_TBS|| ''', '''||TO_TBS|| ''', '''||ILM_COMMON.GET_COMPRESSION_CLAUSE(managed_table.TABLENAME,TO_STAGE)||''')', 200);
             
             -- exchange warm partition with temporary table
             RUN_TASK('ILM_CORE.EXCHANGE_PARTITION(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||managed_table.TEMPTABLENAME||''')', 300);
@@ -110,11 +107,24 @@ create or replace PACKAGE BODY ILM_CORE AS
             IF ILM_COMMON.TABLE_EXIST(DORMANT_TABLE_NAME)=0 THEN
               RUN_TASK('ILM_CORE.COPY_TABLE(''' || managed_table.TEMPTABLENAME || ''', '''||TO_TBS || ''', '''||DORMANT_TABLE_NAME||''')', 100);
             END IF;
+        
+            -- move all subpartitions of selected partition
+            RUN_TASK('ILM_CORE.MOVE_SUBPARTITION(''' || managed_table.COLDTABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||FROM_TBS|| ''', '''||TO_TBS|| ''', '''||ILM_COMMON.GET_COMPRESSION_CLAUSE(managed_table.TABLENAME,TO_STAGE)||''')', 200);
             
-            -- exchange warm partition with table
-            RUN_TASK('ILM_CORE.EXCHANGE_PARTITION(''' || managed_table.COLDTABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||DORMANT_TABLE_NAME||''')', 300);
+            -- move subpartitioned lob
+            RUN_TASK('ILM_CORE.MOVE_SUBPARTITIONED_LOB(''' || managed_table.COLDTABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||FROM_TBS|| ''', '''||TO_TBS||''')', 300);
+
+            -- exchange COLD partition with DORMANT table
+            RUN_TASK('ILM_CORE.EXCHANGE_PARTITION(''' || managed_table.COLDTABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||DORMANT_TABLE_NAME||''')', 400);
+            
+            -- drop source partition
+            RUN_TASK('ILM_CORE.DROP_PARTITION(''' || managed_table.COLDTABLENAME  || ''', '''||pRow.PARTITION_NAME || ''')', 500);
+            
           END IF;
         END LOOP;
+        
+        -- rebuild global index of COLD table
+        RUN_TASK('ILM_CORE.REBUILD_GLOBAL_INDEX(''' || managed_table.COLDTABLENAME || ''')', 600);
         
       END LOOP;
   END;
@@ -255,19 +265,36 @@ create or replace PACKAGE BODY ILM_CORE AS
     raise_application_error(-20010, ERROR_MESSAGE);
   END;
   
+  ----------------------------------------------------------------------------------------------------------------
+  --  Move all partitions of a table from one tablespace to another tablespace
+  -----------------------------------------------------------------------------------------------------------------
+  PROCEDURE MOVE_PARTITION(I_TABLE_NAME in VARCHAR2, I_FROM_TBS in VARCHAR2, I_TO_TBS in VARCHAR2, COMPRESSION_CLAUSE in VARCHAR2) AS
+  BEGIN
+    FOR spRow in (select PARTITION_NAME from USER_TAB_PARTITIONS WHERE TABLESPACE_NAME=I_FROM_TBS AND TABLE_NAME=I_TABLE_NAME)
+    LOOP
+      -- update status in ILMMANAGEDTABLE
+      ILM_COMMON.UPDATE_ILMTABLE_STATUS(I_TABLE_NAME, FROM_STAGE, ILMTABLESTATUS_PARTITIONMOVE);
+
+      LOG_MESSAGE('Move partition ' || I_TABLE_NAME || '.' || spRow.PARTITION_NAME || ' from tablespace ' || I_FROM_TBS ||' to tablespace '|| I_TO_TBS);
+      EXECUTE IMMEDIATE 'ALTER TABLE ' || I_TABLE_NAME || ' MOVE PARTITION ' || spRow.PARTITION_NAME || COMPRESSION_CLAUSE || ' TABLESPACE ' || I_TO_TBS || ILM_COMMON.GET_ONLINE_MOVE_CLAUSE() || ILM_COMMON.GET_PARALLEL_CLAUSE();
+       
+      -- update status in ILMMANAGEDTABLE
+      ILM_COMMON.UPDATE_ILMTABLE_STATUS(I_TABLE_NAME, FROM_STAGE, ILMTABLESTATUS_VALID);
+    END LOOP;
+  END;
 
   ----------------------------------------------------------------------------------------------------------------
   --  Move all subpartitions of a partition from one tablespace to another tablespace
   -----------------------------------------------------------------------------------------------------------------
-  PROCEDURE MOVE_SUBPARTITION(I_TABLE_NAME in VARCHAR2, I_PARTITION_NAME in VARCHAR2) AS
+  PROCEDURE MOVE_SUBPARTITION(I_TABLE_NAME in VARCHAR2, I_PARTITION_NAME in VARCHAR2, I_FROM_TBS in VARCHAR2, I_TO_TBS in VARCHAR2, COMPRESSION_CLAUSE in VARCHAR2) AS
   BEGIN
-    FOR spRow in (select SUBPARTITION_NAME from USER_TAB_SUBPARTITIONS WHERE TABLESPACE_NAME=FROM_TBS AND PARTITION_NAME=I_PARTITION_NAME)
+    FOR spRow in (select SUBPARTITION_NAME from USER_TAB_SUBPARTITIONS WHERE TABLESPACE_NAME=I_FROM_TBS AND PARTITION_NAME=I_PARTITION_NAME)
     LOOP
       -- update status in ILMMANAGEDTABLE
       ILM_COMMON.UPDATE_ILMTABLE_STATUS(I_TABLE_NAME, FROM_STAGE, ILMTABLESTATUS_PARTITIONMOVE);
         
-      LOG_MESSAGE('Move subpartition ' || I_TABLE_NAME || '.' || spRow.SUBPARTITION_NAME || ' from tablespace ' || FROM_TBS ||' to tablespace '|| TO_TBS);
-      EXECUTE IMMEDIATE 'ALTER TABLE ' || I_TABLE_NAME || ' MOVE SUBPARTITION ' || spRow.SUBPARTITION_NAME || ILM_COMMON.GET_COMPRESSION_CLAUSE(I_TABLE_NAME,TO_STAGE) || ' TABLESPACE ' || TO_TBS || ILM_COMMON.GET_ONLINE_MOVE_CLAUSE() || ILM_COMMON.GET_PARALLEL_CLAUSE();
+      LOG_MESSAGE('Move subpartition ' || I_TABLE_NAME || '.' || spRow.SUBPARTITION_NAME || ' from tablespace ' || I_FROM_TBS ||' to tablespace '|| I_TO_TBS);
+      EXECUTE IMMEDIATE 'ALTER TABLE ' || I_TABLE_NAME || ' MOVE SUBPARTITION ' || spRow.SUBPARTITION_NAME || COMPRESSION_CLAUSE || ' TABLESPACE ' || I_TO_TBS || ILM_COMMON.GET_ONLINE_MOVE_CLAUSE() || ILM_COMMON.GET_PARALLEL_CLAUSE();
        
       -- update status in ILMMANAGEDTABLE
       ILM_COMMON.UPDATE_ILMTABLE_STATUS(I_TABLE_NAME, FROM_STAGE, ILMTABLESTATUS_VALID);
@@ -287,6 +314,7 @@ create or replace PACKAGE BODY ILM_CORE AS
   
   ----------------------------------------------------------------------------------------------------------------
   -- Move all subpartitioned lobs of a partition from one tablespace to another tablespace
+    -- Both LOB segments and indexes are moved together. The indexes are maintained by Oracle and always have USUABLE status.
   -----------------------------------------------------------------------------------------------------------------
   PROCEDURE MOVE_SUBPARTITIONED_LOB(I_TABLE_NAME in VARCHAR2, I_PARTITION_NAME in VARCHAR2, I_FROM_TBS in VARCHAR2, I_TO_TBS in VARCHAR2) AS
     COLUMN_NAME varchar2(30);
@@ -337,7 +365,7 @@ create or replace PACKAGE BODY ILM_CORE AS
   ----------------------------------------------------------------------------------------------------------------
   -- Move all subpartitioned indexes of a sinle partition, from one tablespace to another tablespace, and rebuild them
   -----------------------------------------------------------------------------------------------------------------
-  PROCEDURE MOVE_SUBPART_INDEX(I_TABLE_NAME in VARCHAR2, I_PARTITION_NAME in VARCHAR2, I_FROM_TBS in VARCHAR2, I_TO_TBS in VARCHAR2) AS
+  PROCEDURE MOVE_REBUILD_SUBPART_INDEX(I_TABLE_NAME in VARCHAR2, I_PARTITION_NAME in VARCHAR2, I_FROM_TBS in VARCHAR2, I_TO_TBS in VARCHAR2) AS
   BEGIN
     FOR spRow in (
       SELECT subPart.INDEX_NAME, subPart.SUBPARTITION_NAME 
@@ -418,7 +446,6 @@ create or replace PACKAGE BODY ILM_CORE AS
   -- Create a copy of temporary table in a specific tablespace
   -----------------------------------------------------------------------------------------------------------------
   PROCEDURE COPY_TABLE(I_TABLE_NAME in VARCHAR2, I_TO_TBS IN VARCHAR2, NEW_TABLE_NAME IN VARCHAR2) AS
-    EXISTING_TBS VARCHAR2(30);
     CREATE_STATEMENT VARCHAR2(8000);
     CNT NUMBER;
   BEGIN
@@ -434,8 +461,7 @@ create or replace PACKAGE BODY ILM_CORE AS
     CREATE_STATEMENT := REGEXP_REPLACE(CREATE_STATEMENT, '"'||I_TABLE_NAME||'"', '"'||NEW_TABLE_NAME||'"');
     
     -- replace tablespace
-    SELECT TABLESPACE_NAME INTO EXISTING_TBS FROM USER_TABLES WHERE TABLE_NAME=I_TABLE_NAME;
-    CREATE_STATEMENT := REGEXP_REPLACE(CREATE_STATEMENT,  '"'||EXISTING_TBS||'"', '"'||I_TO_TBS||'"');
+    CREATE_STATEMENT := REGEXP_REPLACE(CREATE_STATEMENT,  'TABLESPACE \"(\S)*"', 'TABLESPACE "' || I_TO_TBS || '"');
 
     LOG_MESSAGE('Create new table ' || NEW_TABLE_NAME|| ' in tablespace ' || I_TO_TBS);
     EXECUTE IMMEDIATE CREATE_STATEMENT;
