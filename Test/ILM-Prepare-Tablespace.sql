@@ -1,24 +1,28 @@
 -----------------------------------
 -- Clean and install tablespace
 -----------------------------------
-
+SET SERVEROUTPUT ON
 -- remove all partitioned tables (thus the partitions, log segment and indexes)
 BEGIN
-  for tab in (select table_name from user_tables where tablespace_name is null)
+  for tab in (select table_name from USER_PART_TABLES)
   LOOP
-    Execute immediate 'drop table ' || tab.table_name || ' cascade constraints PURGE';
+    DBMS_OUTPUT.PUT_LINE('Removed table ' || tab.table_name);
+    EXECUTE IMMEDIATE 'DROP TABLE ' || TAB.TABLE_NAME || ' CASCADE CONSTRAINTS PURGE';
   END LOOP;
 END;
 /
 
 
 -- drop tablespace
+PURGE RECYCLEBIN;  -- must purge recyclebin otherwise tablespace cannot be dropped if there are objects in it
+DROP TABLESPACE ILM_DORMANT_TBS INCLUDING CONTENTS AND DATAFILES CASCADE CONSTRAINTS;
 DROP TABLESPACE ILM_COLD_TBS INCLUDING CONTENTS AND DATAFILES CASCADE CONSTRAINTS;
 DROP TABLESPACE ILM_WARM_TBS INCLUDING CONTENTS AND DATAFILES CASCADE CONSTRAINTS;
 DROP TABLESPACE ILM_HOT_TBS INCLUDING CONTENTS AND DATAFILES CASCADE CONSTRAINTS;
+
 
 -- create tablespace    
 CREATE TABLESPACE ILM_HOT_TBS DATAFILE 'ILM_HOT_TBS.dat' SIZE 5M AUTOEXTEND ON;
 CREATE TABLESPACE ILM_WARM_TBS DATAFILE 'ILM_WARM_TBS.dat' SIZE 5M AUTOEXTEND ON;
 CREATE TABLESPACE ILM_COLD_TBS DATAFILE 'ILM_COLD_TBS.dat' SIZE 5M AUTOEXTEND ON;
-
+CREATE TABLESPACE ILM_DORMANT_TBS DATAFILE 'ILM_DORMANT_TBS.dat' SIZE 5M AUTOEXTEND ON;
