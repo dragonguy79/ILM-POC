@@ -1,24 +1,35 @@
 create or replace PACKAGE BODY ILM_COMMON AS
 
   -----------------------------------------------------------------------------------------------------------------
-  -- Check that a tablespace does exist
+  -- Check that a tablespace exist
     -- return 0 if tablespace does not exist
     -- return 1 if tablespace found
   -----------------------------------------------------------------------------------------------------------------
   FUNCTION TABLESPACE_EXIST(TBS_NAME in VARCHAR2) RETURN NUMBER AS
-    ROW_FOUND NUMBER;
+    ROW_FOUND NUMBER := 0;
   BEGIN
-     SELECT COUNT(*) INTO ROW_FOUND FROM USER_TABLESPACES WHERE TABLESPACE_NAME = TBS_NAME AND ROWNUM <= 1;
+     SELECT COUNT(*) INTO ROW_FOUND FROM USER_TABLESPACES WHERE TABLESPACE_NAME = UPPER(TBS_NAME) AND ROWNUM <= 1;
      RETURN ROW_FOUND;
   END;
   
+  -----------------------------------------------------------------------------------------------------------------
+  -- Check that a table  exist
+    -- return 0 if table does not exist
+    -- return 1 if table found
+  -----------------------------------------------------------------------------------------------------------------
+  FUNCTION TABLE_EXIST(I_TABLE_NAME in VARCHAR2) RETURN NUMBER AS
+    ROW_FOUND NUMBER := 0;
+  BEGIN
+     SELECT COUNT(*) INTO ROW_FOUND FROM USER_TABLES WHERE TABLE_NAME = UPPER(I_TABLE_NAME) AND ROWNUM <= 1;
+     RETURN ROW_FOUND;
+  END;
   -----------------------------------------------------------------------------------------------------------------
   -- Check that a JOB does exist
     -- return 0 if JOB does not exist
     -- return 1 if tablespace found
   -----------------------------------------------------------------------------------------------------------------
   FUNCTION CAN_RESUME_JOB(JOB_ID in NUMBER) RETURN NUMBER AS
-    ROW_FOUND NUMBER;
+    ROW_FOUND NUMBER := 0;
   BEGIN
      SELECT COUNT(*) INTO ROW_FOUND FROM ILMJOB WHERE ID = JOB_ID AND STATUS = ILM_CORE.JOBSTATUS_FAILED AND ROWNUM <= 1;
      RETURN ROW_FOUND;
@@ -143,8 +154,7 @@ create or replace PACKAGE BODY ILM_COMMON AS
     ELSIF I_STAGE = ILM_CORE.COLD_STAGE THEN
       EXECUTE IMMEDIATE GET_TBS_STMT INTO TBS_NAME USING 'COLD_TABLESPACE_NAME';
     ELSIF I_STAGE = ILM_CORE.DORMANT_STAGE THEN
-      EXECUTE IMMEDIATE GET_TBS_STMT INTO TBS_NAME USING 'DORMANT_TABLESPACE_PREFIX';
-      TBS_NAME := TBS_NAME || to_char(JOB_TIME,'YYYYMMDD') ;
+      EXECUTE IMMEDIATE GET_TBS_STMT INTO TBS_NAME USING 'DORMANT_TABLESPACE_NAME';
     ELSE
       raise_application_error(-20010, 'Cannot find tablespace name from stage ' || I_STAGE);
     END IF;

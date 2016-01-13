@@ -78,7 +78,7 @@ create or replace PACKAGE ILM_CORE AS
   PROCEDURE MOVE_SUBPART_INDEX(I_TABLE_NAME in VARCHAR2, I_PARTITION_NAME in VARCHAR2, I_FROM_TBS in VARCHAR2, I_TO_TBS in VARCHAR2);
   PROCEDURE MODIFY_PARTITION_INDEX_TBS(I_TABLE_NAME in VARCHAR2, I_PARTITION_NAME in VARCHAR2, I_TO_TBS in VARCHAR2);
   
-  PROCEDURE COPY_TEMP_TABLE(I_TABLE_NAME in VARCHAR2, I_TO_TBS IN VARCHAR2, SUFFIX IN VARCHAR2);
+  PROCEDURE COPY_TABLE(I_TABLE_NAME in VARCHAR2, I_TO_TBS IN VARCHAR2, NEW_TABLE_NAME IN VARCHAR2);
   -----------------------------------------------------------------------------------------------------------------
   -- Functions
   -----------------------------------------------------------------------------------------------------------------

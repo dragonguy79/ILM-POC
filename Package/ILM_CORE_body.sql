@@ -91,26 +91,30 @@ create or replace PACKAGE BODY ILM_CORE AS
   -- Job to move data from COLD to DORMANT
   -----------------------------------------------------------------------------------------------------------------
   PROCEDURE RUN_COLD2DORMANT_JOB AS
+    DORMANT_TABLE_NAME VARCHAR2 (30);
   BEGIN
-     FOR managed_table IN (SELECT TABLENAME, TEMPTABLENAME, MOVESEQUENCE from ILMMANAGEDTABLE WHERE MOVESEQUENCE >= CURRENT_MOVE_SEQUENCE ORDER BY MOVESEQUENCE ASC) 
+     FOR managed_table IN (SELECT TABLENAME, TEMPTABLENAME, COLDTABLENAME, MOVESEQUENCE from ILMMANAGEDTABLE WHERE MOVESEQUENCE >= CURRENT_MOVE_SEQUENCE ORDER BY MOVESEQUENCE ASC) 
       LOOP
         CURRENT_MOVE_SEQUENCE := managed_table.MOVESEQUENCE;
         
         FOR pRow in (
           select PARTITION_NAME, HIGH_VALUE from USER_TAB_PARTITIONS 
-          WHERE TABLESPACE_NAME=FROM_TBS AND TABLE_NAME=managed_table.TABLENAME
+          WHERE TABLESPACE_NAME=FROM_TBS AND TABLE_NAME=managed_table.COLDTABLENAME
           ORDER BY PARTITION_POSITION)
         LOOP
           -- only work with expired partition
           IF ILM_COMMON.IS_PARTITION_EXPIRED(pRow.HIGH_VALUE, ILM_COMMON.GET_RETENTION(managed_table.TABLENAME, FROM_STAGE), JOB_START_TSP) = 1 THEN
             
-            -- create table to store partition data in DORMANT tbs
-            RUN_TASK('ILM_CORE.COPY_TEMP_TABLE(''' || managed_table.TABLENAME || ''', '''||TO_TBS || ''', '''||pRow.PARTITION_NAME||''')', 100);
+            -- create table in DORMANT tablespace to store partition data 
+            DORMANT_TABLE_NAME := SUBSTR(managed_table.TABLENAME, 1, 30 - length(pRow.PARTITION_NAME)) || pRow.PARTITION_NAME;
+            IF ILM_COMMON.TABLE_EXIST(DORMANT_TABLE_NAME)=0 THEN
+              RUN_TASK('ILM_CORE.COPY_TABLE(''' || managed_table.TEMPTABLENAME || ''', '''||TO_TBS || ''', '''||DORMANT_TABLE_NAME||''')', 100);
+            END IF;
             
-
+            -- exchange warm partition with table
+            RUN_TASK('ILM_CORE.EXCHANGE_PARTITION(''' || managed_table.COLDTABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||DORMANT_TABLE_NAME||''')', 300);
           END IF;
         END LOOP;
-
         
       END LOOP;
   END;
@@ -413,37 +417,25 @@ create or replace PACKAGE BODY ILM_CORE AS
   -----------------------------------------------------------------------------------------------------------------
   -- Create a copy of temporary table in a specific tablespace
   -----------------------------------------------------------------------------------------------------------------
-  PROCEDURE COPY_TEMP_TABLE(I_TABLE_NAME in VARCHAR2, I_TO_TBS IN VARCHAR2, SUFFIX IN VARCHAR2) AS
-    TEMP_TABLE_NAME VARCHAR2(30);
-    NEW_TABLE_NAME VARCHAR2(30);
-    EXISTING_TBS_NAME VARCHAR2(30);
-    PK_NAME VARCHAR2(30);
-    NEW_PK_NAME VARCHAR2(30);
+  PROCEDURE COPY_TABLE(I_TABLE_NAME in VARCHAR2, I_TO_TBS IN VARCHAR2, NEW_TABLE_NAME IN VARCHAR2) AS
+    EXISTING_TBS VARCHAR2(30);
     CREATE_STATEMENT VARCHAR2(8000);
+    CNT NUMBER;
   BEGIN
-    SELECT TEMPTABLENAME INTO TEMP_TABLE_NAME FROM ILMMANAGEDTABLE WHERE TABLENAME=I_TABLE_NAME;
-  
     -- set parameter to remove uneeded constraints in DDL generation
     DBMS_METADATA.SET_TRANSFORM_PARAM (DBMS_METADATA.SESSION_TRANSFORM,'STORAGE',false);
     DBMS_METADATA.SET_TRANSFORM_PARAM (DBMS_METADATA.SESSION_TRANSFORM,'TABLESPACE',true);
     DBMS_METADATA.SET_TRANSFORM_PARAM (DBMS_METADATA.SESSION_TRANSFORM,'SEGMENT_ATTRIBUTES', true);
     DBMS_METADATA.SET_TRANSFORM_PARAM (DBMS_METADATA.SESSION_TRANSFORM,'REF_CONSTRAINTS', false);
     DBMS_METADATA.SET_TRANSFORM_PARAM (DBMS_METADATA.SESSION_TRANSFORM,'CONSTRAINTS', false);
-    CREATE_STATEMENT := DBMS_METADATA.GET_DDL('TABLE', TEMP_TABLE_NAME);
+    CREATE_STATEMENT := DBMS_METADATA.GET_DDL('TABLE', I_TABLE_NAME);
 
     -- replace table name
-    NEW_TABLE_NAME := SUBSTR(I_TABLE_NAME, 1, 30 - length(SUFFIX)) || SUFFIX;
-    CREATE_STATEMENT := REGEXP_REPLACE(CREATE_STATEMENT, '"'||TEMP_TABLE_NAME||'"', '"'||NEW_TABLE_NAME||'"');
+    CREATE_STATEMENT := REGEXP_REPLACE(CREATE_STATEMENT, '"'||I_TABLE_NAME||'"', '"'||NEW_TABLE_NAME||'"');
     
     -- replace tablespace
-    SELECT TABLESPACE_NAME INTO EXISTING_TBS_NAME FROM USER_TABLES WHERE TABLE_NAME=TEMP_TABLE_NAME;
-    CREATE_STATEMENT := REGEXP_REPLACE(CREATE_STATEMENT,  '"'||EXISTING_TBS_NAME||'"', '"'||I_TO_TBS||'"');
-
-    -- commented, because constraint are not needed for exchange direction table
-    -- replace primary key name
-    --    select CONSTRAINT_NAME into PK_NAME from ALL_CONSTRAINTS where TABLE_NAME = I_TABLE_NAME and CONSTRAINT_TYPE = 'P' and rownum<=1;
-    --    NEW_PK_NAME := SUBSTR(PK_NAME, 1, 30 - length(SUFFIX)) || SUFFIX;
-    --    CREATE_STATEMENT :=  REGEXP_REPLACE(CREATE_STATEMENT, PK_NAME, NEW_PK_NAME);
+    SELECT TABLESPACE_NAME INTO EXISTING_TBS FROM USER_TABLES WHERE TABLE_NAME=I_TABLE_NAME;
+    CREATE_STATEMENT := REGEXP_REPLACE(CREATE_STATEMENT,  '"'||EXISTING_TBS||'"', '"'||I_TO_TBS||'"');
 
     LOG_MESSAGE('Create new table ' || NEW_TABLE_NAME|| ' in tablespace ' || I_TO_TBS);
     EXECUTE IMMEDIATE CREATE_STATEMENT;
