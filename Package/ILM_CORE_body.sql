@@ -24,7 +24,7 @@ create or replace PACKAGE BODY ILM_CORE AS
             RUN_TASK('ILM_CORE.MOVE_REBUILD_SUBPART_INDEX(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||FROM_TBS|| ''', '''||TO_TBS||''')', 200);
             
             -- update tablespace attribute of partition
-            RUN_TASK('ILM_CORE.MODIFY_PARTITION_TBS(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||TO_TBS||''')', 400);
+            RUN_TASK('ILM_CORE.MODIFY_PARTITION_TBS(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||TO_TBS|| ''', '''||ILM_COMMON.GET_COMPRESSION_CLAUSE(managed_table.TABLENAME,TO_STAGE)||''')', 400);
             
             -- update tablespace attribute of partitioned index
             RUN_TASK('ILM_CORE.MODIFY_PARTITION_INDEX_TBS(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||TO_TBS||''')', 500);
@@ -268,7 +268,7 @@ create or replace PACKAGE BODY ILM_CORE AS
   ----------------------------------------------------------------------------------------------------------------
   --  Move all partitions of a table from one tablespace to another tablespace
   -----------------------------------------------------------------------------------------------------------------
-  PROCEDURE MOVE_PARTITION(I_TABLE_NAME in VARCHAR2, I_FROM_TBS in VARCHAR2, I_TO_TBS in VARCHAR2, COMPRESSION_CLAUSE in VARCHAR2) AS
+  PROCEDURE MOVE_PARTITION(I_TABLE_NAME in VARCHAR2, I_FROM_TBS in VARCHAR2, I_TO_TBS in VARCHAR2, COMPRESSION_CLAUSE in VARCHAR2 DEFAULT '') AS
   BEGIN
     FOR spRow in (select PARTITION_NAME from USER_TAB_PARTITIONS WHERE TABLESPACE_NAME=I_FROM_TBS AND TABLE_NAME=I_TABLE_NAME)
     LOOP
@@ -286,7 +286,7 @@ create or replace PACKAGE BODY ILM_CORE AS
   ----------------------------------------------------------------------------------------------------------------
   --  Move all subpartitions of a partition from one tablespace to another tablespace
   -----------------------------------------------------------------------------------------------------------------
-  PROCEDURE MOVE_SUBPARTITION(I_TABLE_NAME in VARCHAR2, I_PARTITION_NAME in VARCHAR2, I_FROM_TBS in VARCHAR2, I_TO_TBS in VARCHAR2, COMPRESSION_CLAUSE in VARCHAR2) AS
+  PROCEDURE MOVE_SUBPARTITION(I_TABLE_NAME in VARCHAR2, I_PARTITION_NAME in VARCHAR2, I_FROM_TBS in VARCHAR2, I_TO_TBS in VARCHAR2, COMPRESSION_CLAUSE in VARCHAR2 DEFAULT '') AS
   BEGIN
     FOR spRow in (select SUBPARTITION_NAME from USER_TAB_SUBPARTITIONS WHERE TABLESPACE_NAME=I_FROM_TBS AND PARTITION_NAME=I_PARTITION_NAME)
     LOOP
@@ -305,11 +305,11 @@ create or replace PACKAGE BODY ILM_CORE AS
   -- Update attribute of partition
     -- Partition does not contain any data since they are stored in subpartitions, but still we need to update the attribute for correctness.
   -----------------------------------------------------------------------------------------------------------------
-  PROCEDURE MODIFY_PARTITION_TBS(I_TABLE_NAME in VARCHAR2, I_PARTITION_NAME in VARCHAR2, I_TO_TBS in VARCHAR2) AS
+  PROCEDURE MODIFY_PARTITION_TBS(I_TABLE_NAME in VARCHAR2, I_PARTITION_NAME in VARCHAR2, I_TO_TBS in VARCHAR2, COMPRESSION_CLAUSE in VARCHAR2 DEFAULT '') AS
   BEGIN
     -- update partition metadata [TABLESPACE_NAME]
     LOG_MESSAGE('Modify partition attribute ' || I_TABLE_NAME || '.' || I_PARTITION_NAME || ' to tablespace '|| I_TO_TBS);
-    EXECUTE IMMEDIATE 'ALTER TABLE ' || I_TABLE_NAME || ' MODIFY DEFAULT ATTRIBUTES FOR PARTITION ' || I_PARTITION_NAME || ' ' || ILM_COMMON.GET_COMPRESSION_CLAUSE(I_TABLE_NAME,TO_STAGE) || ' TABLESPACE ' || I_TO_TBS;
+    EXECUTE IMMEDIATE 'ALTER TABLE ' || I_TABLE_NAME || ' MODIFY DEFAULT ATTRIBUTES FOR PARTITION ' || I_PARTITION_NAME || ' ' || COMPRESSION_CLAUSE || ' TABLESPACE ' || I_TO_TBS;
   END;
   
   ----------------------------------------------------------------------------------------------------------------
