@@ -4,36 +4,54 @@ create or replace PACKAGE BODY ILM_CORE AS
   -- Job to move data from HOT to WARM
   -----------------------------------------------------------------------------------------------------------------
   PROCEDURE RUN_HOT2WARM_JOB AS
+    L1_STEP_ID NUMBER;
+    L2_STEP_ID NUMBER;
+    L3_STEP_ID NUMBER;
   BEGIN
-     FOR managed_table IN (SELECT TABLENAME, MOVESEQUENCE from ILMMANAGEDTABLE WHERE MOVESEQUENCE >= CURRENT_MOVE_SEQUENCE ORDER BY MOVESEQUENCE ASC) 
+     L1_STEP_ID:=1;
+     FOR managed_table IN (SELECT TABLENAME, MOVESEQUENCE from ILMMANAGEDTABLE WHERE MOVESEQUENCE >= RESUME_TABLE_SEQUENCE ORDER BY MOVESEQUENCE ASC) 
       LOOP
-        CURRENT_MOVE_SEQUENCE := managed_table.MOVESEQUENCE;
-        
+        L2_STEP_ID:=1;
         FOR pRow in (
           select PARTITION_NAME, HIGH_VALUE from USER_TAB_PARTITIONS 
-          WHERE TABLESPACE_NAME=FROM_TBS AND TABLE_NAME=managed_table.TABLENAME
+          WHERE TABLESPACE_NAME=FROM_TBS AND TABLE_NAME=managed_table.TABLENAME AND PARTITION_POSITION >= RESUME_PARTITION_SEQUENCE
           ORDER BY PARTITION_POSITION)
         LOOP
           -- only work with expired partition
-          IF ILM_COMMON.IS_PARTITION_EXPIRED(pRow.HIGH_VALUE, ILM_COMMON.GET_RETENTION(managed_table.TABLENAME, FROM_STAGE), JOB_START_TSP) = 1 THEN
+          IF ILM_COMMON.IS_PARTITION_EXPIRED(pRow.HIGH_VALUE, ILM_COMMON.GET_RETENTION(managed_table.TABLENAME, FROM_STAGE), JOB_START_TIMESTAMP) = 1 THEN
             
             -- move all subpartitions of selected partition
-            RUN_TASK('ILM_CORE.MOVE_SUBPARTITION(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||FROM_TBS|| ''', '''||TO_TBS|| ''', '''||ILM_COMMON.GET_COMPRESSION_CLAUSE(managed_table.TABLENAME,TO_STAGE)||''')', 100);
+            L3_STEP_ID:=1;
+            RUN_TASK(
+              'ILM_CORE.MOVE_SUBPARTITION(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||FROM_TBS|| ''', '''||TO_TBS|| ''', '''||ILM_COMMON.GET_COMPRESSION_CLAUSE(managed_table.TABLENAME,TO_STAGE)||''')', 
+              CONSTRUCT_STEP_ID(L1_STEP_ID, managed_table.TABLENAME, L2_STEP_ID, pRow.PARTITION_NAME, L3_STEP_ID));
 
             -- move and rebuild subpartitioned index
-            RUN_TASK('ILM_CORE.MOVE_REBUILD_SUBPART_INDEX(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||FROM_TBS|| ''', '''||TO_TBS||''')', 200);
+            L3_STEP_ID:=L3_STEP_ID+1;
+            RUN_TASK(
+              'ILM_CORE.MOVE_REBUILD_SUBPART_INDEX(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||FROM_TBS|| ''', '''||TO_TBS||''')', 
+              CONSTRUCT_STEP_ID(L1_STEP_ID, managed_table.TABLENAME, L2_STEP_ID, pRow.PARTITION_NAME, L3_STEP_ID));
             
             -- update tablespace attribute of partition
-            RUN_TASK('ILM_CORE.MODIFY_PARTITION_TBS(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||TO_TBS|| ''', '''||ILM_COMMON.GET_COMPRESSION_CLAUSE(managed_table.TABLENAME,TO_STAGE)||''')', 400);
+            L3_STEP_ID:=L3_STEP_ID+1;
+            RUN_TASK(
+              'ILM_CORE.MODIFY_PARTITION_TBS(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||TO_TBS|| ''', '''||ILM_COMMON.GET_COMPRESSION_CLAUSE(managed_table.TABLENAME,TO_STAGE)||''')', 
+              CONSTRUCT_STEP_ID(L1_STEP_ID, managed_table.TABLENAME, L2_STEP_ID, pRow.PARTITION_NAME, L3_STEP_ID));
             
             -- update tablespace attribute of partitioned index
-            RUN_TASK('ILM_CORE.MODIFY_PARTITION_INDEX_TBS(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||TO_TBS||''')', 500);
+            L3_STEP_ID:=L3_STEP_ID+1;
+            RUN_TASK(
+              'ILM_CORE.MODIFY_PARTITION_INDEX_TBS(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||TO_TBS||''')', 
+              CONSTRUCT_STEP_ID(L1_STEP_ID, managed_table.TABLENAME, L2_STEP_ID, pRow.PARTITION_NAME, L3_STEP_ID));
           END IF;
     
         END LOOP;
 
         -- rebuild global index
-        RUN_TASK('ILM_CORE.REBUILD_GLOBAL_INDEX(''' || managed_table.TABLENAME || ''')', 600);
+        L2_STEP_ID:=L2_STEP_ID+1;
+        RUN_TASK(
+          'ILM_CORE.REBUILD_GLOBAL_INDEX(''' || managed_table.TABLENAME || ''')', 
+          CONSTRUCT_STEP_ID(L1_STEP_ID, managed_table.TABLENAME, L2_STEP_ID));
 
       END LOOP;
   END;
@@ -42,44 +60,75 @@ create or replace PACKAGE BODY ILM_CORE AS
   -- Job to move data from WARM to COLD
   -----------------------------------------------------------------------------------------------------------------
   PROCEDURE RUN_WARM2COLD_JOB AS
+    L1_STEP_ID NUMBER;
+    L2_STEP_ID NUMBER;
+    L3_STEP_ID NUMBER;
   BEGIN
-     FOR managed_table IN (SELECT TABLENAME, TEMPTABLENAME, COLDTABLENAME, MOVESEQUENCE from ILMMANAGEDTABLE WHERE MOVESEQUENCE >= CURRENT_MOVE_SEQUENCE ORDER BY MOVESEQUENCE ASC) 
+    L1_STEP_ID:=1;
+    FOR managed_table IN (SELECT TABLENAME, TEMPTABLENAME, COLDTABLENAME, MOVESEQUENCE from ILMMANAGEDTABLE WHERE MOVESEQUENCE >= RESUME_TABLE_SEQUENCE ORDER BY MOVESEQUENCE ASC) 
       LOOP
-        CURRENT_MOVE_SEQUENCE := managed_table.MOVESEQUENCE;
-        
+        L2_STEP_ID:=1;
         FOR pRow in (
           select PARTITION_NAME, HIGH_VALUE from USER_TAB_PARTITIONS 
-          WHERE TABLESPACE_NAME=FROM_TBS AND TABLE_NAME=managed_table.TABLENAME
+          WHERE TABLESPACE_NAME=FROM_TBS AND TABLE_NAME=managed_table.TABLENAME AND PARTITION_POSITION >= RESUME_PARTITION_SEQUENCE
           ORDER BY PARTITION_POSITION)
         LOOP
           -- only work with expired partition
-          IF ILM_COMMON.IS_PARTITION_EXPIRED(pRow.HIGH_VALUE, ILM_COMMON.GET_RETENTION(managed_table.TABLENAME, FROM_STAGE), JOB_START_TSP) = 1 THEN
+          IF ILM_COMMON.IS_PARTITION_EXPIRED(pRow.HIGH_VALUE, ILM_COMMON.GET_RETENTION(managed_table.TABLENAME, FROM_STAGE), JOB_START_TIMESTAMP) = 1 THEN
             -- create partition in COLD tables
-            RUN_TASK('ILM_CORE.CREATE_PARTITION(''' || managed_table.COLDTABLENAME || ''', '''||pRow.PARTITION_NAME || ''', '||pRow.HIGH_VALUE||')', 100);
+            L3_STEP_ID:=1;
+            RUN_TASK(
+              'ILM_CORE.CREATE_PARTITION(''' || managed_table.COLDTABLENAME || ''', '''||pRow.PARTITION_NAME || ''', '||pRow.HIGH_VALUE||')', 
+              CONSTRUCT_STEP_ID(L1_STEP_ID, managed_table.TABLENAME, L2_STEP_ID, pRow.PARTITION_NAME, L3_STEP_ID));
             
             -- move all subpartitions of selected partition
-            RUN_TASK('ILM_CORE.MOVE_SUBPARTITION(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||FROM_TBS|| ''', '''||TO_TBS|| ''', '''||ILM_COMMON.GET_COMPRESSION_CLAUSE(managed_table.TABLENAME,TO_STAGE)||''')', 200);
+            L3_STEP_ID:=L3_STEP_ID+1;
+            RUN_TASK(
+              'ILM_CORE.MOVE_SUBPARTITION(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||FROM_TBS|| ''', '''||TO_TBS|| ''', '''||ILM_COMMON.GET_COMPRESSION_CLAUSE(managed_table.TABLENAME,TO_STAGE)||''')', 
+              CONSTRUCT_STEP_ID(L1_STEP_ID, managed_table.TABLENAME, L2_STEP_ID, pRow.PARTITION_NAME, L3_STEP_ID));
             
             -- exchange warm partition with temporary table
-            RUN_TASK('ILM_CORE.EXCHANGE_PARTITION(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||managed_table.TEMPTABLENAME||''')', 300);
+            L3_STEP_ID:=L3_STEP_ID+1;
+            RUN_TASK(
+              'ILM_CORE.EXCHANGE_PARTITION(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||managed_table.TEMPTABLENAME||''')', 
+              CONSTRUCT_STEP_ID(L1_STEP_ID, managed_table.TABLENAME, L2_STEP_ID, pRow.PARTITION_NAME, L3_STEP_ID));
 
             -- exchange cold partition to temporary table
-            RUN_TASK('ILM_CORE.EXCHANGE_PARTITION(''' || managed_table.COLDTABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||managed_table.TEMPTABLENAME||''')', 400);
+            L3_STEP_ID:=L3_STEP_ID+1;
+            RUN_TASK(
+              'ILM_CORE.EXCHANGE_PARTITION(''' || managed_table.COLDTABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||managed_table.TEMPTABLENAME||''')', 
+              CONSTRUCT_STEP_ID(L1_STEP_ID, managed_table.TABLENAME, L2_STEP_ID, pRow.PARTITION_NAME, L3_STEP_ID));
             
             -- move subpartitioned lob
-            RUN_TASK('ILM_CORE.MOVE_SUBPARTITIONED_LOB(''' || managed_table.COLDTABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''|| ILM_COMMON.GET_TABLESPACE_NAME(HOT_STAGE)|| ''', '''|| TO_TBS||''')', 500);
+            L3_STEP_ID:=L3_STEP_ID+1;
+            RUN_TASK(
+              'ILM_CORE.MOVE_SUBPARTITIONED_LOB(''' || managed_table.COLDTABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''|| ILM_COMMON.GET_TABLESPACE_NAME(HOT_STAGE)|| ''', '''|| TO_TBS||''')', 
+              CONSTRUCT_STEP_ID(L1_STEP_ID, managed_table.TABLENAME, L2_STEP_ID, pRow.PARTITION_NAME, L3_STEP_ID));
 
             -- rebuild subpartitioned index
-            RUN_TASK('ILM_CORE.REBUILD_SUBPART_INDEX(''' || managed_table.COLDTABLENAME || ''', '''||pRow.PARTITION_NAME||''')', 600);
+            L3_STEP_ID:=L3_STEP_ID+1;
+            RUN_TASK(
+              'ILM_CORE.REBUILD_SUBPART_INDEX(''' || managed_table.COLDTABLENAME || ''', '''||pRow.PARTITION_NAME||''')', 
+              CONSTRUCT_STEP_ID(L1_STEP_ID, managed_table.TABLENAME, L2_STEP_ID, pRow.PARTITION_NAME, L3_STEP_ID));
             
             -- drop source partition
-            RUN_TASK('ILM_CORE.DROP_PARTITION(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME || ''')', 700);
+            L3_STEP_ID:=L3_STEP_ID+1;
+            RUN_TASK(
+              'ILM_CORE.DROP_PARTITION(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME || ''')', 
+              CONSTRUCT_STEP_ID(L1_STEP_ID, managed_table.TABLENAME, L2_STEP_ID, pRow.PARTITION_NAME, L3_STEP_ID));
           END IF;
         END LOOP;
         
         -- rebuild global index of COLD table
-        RUN_TASK('ILM_CORE.REBUILD_GLOBAL_INDEX(''' || managed_table.COLDTABLENAME || ''')', 800);
-        RUN_TASK('ILM_CORE.REBUILD_GLOBAL_INDEX(''' || managed_table.TABLENAME || ''')', 900);
+        L2_STEP_ID:=L2_STEP_ID+1;
+        RUN_TASK(
+          'ILM_CORE.REBUILD_GLOBAL_INDEX(''' || managed_table.COLDTABLENAME || ''')', 
+          CONSTRUCT_STEP_ID(L1_STEP_ID, managed_table.TABLENAME, L2_STEP_ID));
+          
+        L2_STEP_ID:=L2_STEP_ID+1;
+        RUN_TASK(
+          'ILM_CORE.REBUILD_GLOBAL_INDEX(''' || managed_table.TABLENAME || ''')', 
+          CONSTRUCT_STEP_ID(L1_STEP_ID, managed_table.TABLENAME, L2_STEP_ID));
         
       END LOOP;
   END;
@@ -89,42 +138,63 @@ create or replace PACKAGE BODY ILM_CORE AS
   -----------------------------------------------------------------------------------------------------------------
   PROCEDURE RUN_COLD2DORMANT_JOB AS
     DORMANT_TABLE_NAME VARCHAR2 (30);
+    L1_STEP_ID NUMBER;
+    L2_STEP_ID NUMBER;
+    L3_STEP_ID NUMBER;
   BEGIN
-     FOR managed_table IN (SELECT TABLENAME, TEMPTABLENAME, COLDTABLENAME, MOVESEQUENCE from ILMMANAGEDTABLE WHERE MOVESEQUENCE >= CURRENT_MOVE_SEQUENCE ORDER BY MOVESEQUENCE ASC) 
+    L1_STEP_ID:=1;
+    FOR managed_table IN (SELECT TABLENAME, TEMPTABLENAME, COLDTABLENAME, MOVESEQUENCE from ILMMANAGEDTABLE WHERE MOVESEQUENCE >= RESUME_TABLE_SEQUENCE ORDER BY MOVESEQUENCE ASC) 
       LOOP
-        CURRENT_MOVE_SEQUENCE := managed_table.MOVESEQUENCE;
-        
+        L2_STEP_ID:=1;
         FOR pRow in (
           select PARTITION_NAME, HIGH_VALUE from USER_TAB_PARTITIONS 
-          WHERE TABLESPACE_NAME=FROM_TBS AND TABLE_NAME=managed_table.COLDTABLENAME
+          WHERE TABLESPACE_NAME=FROM_TBS AND TABLE_NAME=managed_table.COLDTABLENAME AND PARTITION_POSITION >= RESUME_PARTITION_SEQUENCE
           ORDER BY PARTITION_POSITION)
         LOOP
           -- only work with expired partition
-          IF ILM_COMMON.IS_PARTITION_EXPIRED(pRow.HIGH_VALUE, ILM_COMMON.GET_RETENTION(managed_table.TABLENAME, FROM_STAGE), JOB_START_TSP) = 1 THEN
+          IF ILM_COMMON.IS_PARTITION_EXPIRED(pRow.HIGH_VALUE, ILM_COMMON.GET_RETENTION(managed_table.TABLENAME, FROM_STAGE), JOB_START_TIMESTAMP) = 1 THEN
             
             -- create table in DORMANT tablespace to store partition data 
-            DORMANT_TABLE_NAME := SUBSTR(managed_table.TABLENAME, 1, 30 - length(pRow.PARTITION_NAME)) || pRow.PARTITION_NAME;
+            L3_STEP_ID:=1;
+            DORMANT_TABLE_NAME:=SUBSTR(managed_table.TABLENAME, 1, 30 - length(pRow.PARTITION_NAME)) || pRow.PARTITION_NAME;
             IF ILM_COMMON.TABLE_EXIST(DORMANT_TABLE_NAME)=0 THEN
-              RUN_TASK('ILM_CORE.COPY_TABLE(''' || managed_table.TEMPTABLENAME || ''', '''||TO_TBS || ''', '''||DORMANT_TABLE_NAME||''')', 100);
+              RUN_TASK(
+                'ILM_CORE.COPY_TABLE(''' || managed_table.TEMPTABLENAME || ''', '''||TO_TBS || ''', '''||DORMANT_TABLE_NAME||''')', 
+                CONSTRUCT_STEP_ID(L1_STEP_ID, managed_table.TABLENAME, L2_STEP_ID, pRow.PARTITION_NAME, L3_STEP_ID));
             END IF;
         
             -- move all subpartitions of selected partition
-            RUN_TASK('ILM_CORE.MOVE_SUBPARTITION(''' || managed_table.COLDTABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||FROM_TBS|| ''', '''||TO_TBS|| ''', '''||ILM_COMMON.GET_COMPRESSION_CLAUSE(managed_table.TABLENAME,TO_STAGE)||''')', 200);
+            L3_STEP_ID:=L3_STEP_ID+1;
+            RUN_TASK(
+              'ILM_CORE.MOVE_SUBPARTITION(''' || managed_table.COLDTABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||FROM_TBS|| ''', '''||TO_TBS|| ''', '''||ILM_COMMON.GET_COMPRESSION_CLAUSE(managed_table.TABLENAME,TO_STAGE)||''')', 
+              CONSTRUCT_STEP_ID(L1_STEP_ID, managed_table.TABLENAME, L2_STEP_ID, pRow.PARTITION_NAME, L3_STEP_ID));
             
             -- move subpartitioned lob
-            RUN_TASK('ILM_CORE.MOVE_SUBPARTITIONED_LOB(''' || managed_table.COLDTABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||FROM_TBS|| ''', '''||TO_TBS||''')', 300);
+            L3_STEP_ID:=L3_STEP_ID+1;
+            RUN_TASK(
+              'ILM_CORE.MOVE_SUBPARTITIONED_LOB(''' || managed_table.COLDTABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||FROM_TBS|| ''', '''||TO_TBS||''')', 
+              CONSTRUCT_STEP_ID(L1_STEP_ID, managed_table.TABLENAME, L2_STEP_ID, pRow.PARTITION_NAME, L3_STEP_ID));
 
             -- exchange COLD partition with DORMANT table
-            RUN_TASK('ILM_CORE.EXCHANGE_PARTITION(''' || managed_table.COLDTABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||DORMANT_TABLE_NAME||''')', 400);
+            L3_STEP_ID:=L3_STEP_ID+1;
+            RUN_TASK(
+              'ILM_CORE.EXCHANGE_PARTITION(''' || managed_table.COLDTABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||DORMANT_TABLE_NAME||''')', 
+              CONSTRUCT_STEP_ID(L1_STEP_ID, managed_table.TABLENAME, L2_STEP_ID, pRow.PARTITION_NAME, L3_STEP_ID));
             
             -- drop source partition
-            RUN_TASK('ILM_CORE.DROP_PARTITION(''' || managed_table.COLDTABLENAME  || ''', '''||pRow.PARTITION_NAME || ''')', 500);
+            L3_STEP_ID:=L3_STEP_ID+1;
+            RUN_TASK(
+              'ILM_CORE.DROP_PARTITION(''' || managed_table.COLDTABLENAME  || ''', '''||pRow.PARTITION_NAME || ''')', 
+              CONSTRUCT_STEP_ID(L1_STEP_ID, managed_table.TABLENAME, L2_STEP_ID, pRow.PARTITION_NAME, L3_STEP_ID));
             
           END IF;
         END LOOP;
         
         -- rebuild global index of COLD table
-        RUN_TASK('ILM_CORE.REBUILD_GLOBAL_INDEX(''' || managed_table.COLDTABLENAME || ''')', 600);
+        L2_STEP_ID:=L2_STEP_ID+1;
+        RUN_TASK(
+          'ILM_CORE.REBUILD_GLOBAL_INDEX(''' || managed_table.COLDTABLENAME || ''')', 
+          CONSTRUCT_STEP_ID(L1_STEP_ID, managed_table.TABLENAME, L2_STEP_ID));
         
       END LOOP;
   END;
@@ -134,23 +204,20 @@ create or replace PACKAGE BODY ILM_CORE AS
   -- Run job
   -----------------------------------------------------------------------------------------------------------------
   PROCEDURE RUN_JOB(I_JOB VARCHAR2, I_RESUME_JOB_ID in NUMBER DEFAULT NULL) AS
-    STEP_ID VARCHAR2 (50);
-    OPERATION VARCHAR2(200);
-    GET_TBS_STMT VARCHAR2(100) := 'SELECT VALUE FROM ILMCONFIG WHERE PARAM = :1';
   BEGIN
     -- initialize stages
     IF I_JOB = HOT2WARM_JOB THEN
-      FROM_STAGE := HOT_STAGE;
-      TO_STAGE := WARM_STAGE;
+      FROM_STAGE:=HOT_STAGE;
+      TO_STAGE:=WARM_STAGE;
     ELSIF I_JOB = WARM2COLD_JOB THEN
-      FROM_STAGE := WARM_STAGE;
-      TO_STAGE := COLD_STAGE;
+      FROM_STAGE:=WARM_STAGE;
+      TO_STAGE:=COLD_STAGE;
     ELSIF I_JOB = COLD2DORMANT_JOB THEN
-      FROM_STAGE := COLD_STAGE;
-      TO_STAGE := DORMANT_STAGE;
+      FROM_STAGE:=COLD_STAGE;
+      TO_STAGE:=DORMANT_STAGE;
     ELSIF I_JOB = HOT2COLD_JOB THEN
-      FROM_STAGE := HOT_STAGE;
-      TO_STAGE := COLD_STAGE;
+      FROM_STAGE:=HOT_STAGE;
+      TO_STAGE:=COLD_STAGE;
     ELSE
       THROW_EXCEPTION('Fail to start job: Job type [' || I_JOB || '] is not valid!');
     END IF;
@@ -158,20 +225,18 @@ create or replace PACKAGE BODY ILM_CORE AS
     IF I_RESUME_JOB_ID IS NOT NULL THEN  -- resume job
       IF ILM_COMMON.CAN_RESUME_JOB(I_RESUME_JOB_ID) = 1 THEN
         -- get highest step id from the job
-        EXECUTE IMMEDIATE 'SELECT ILMTASK.STEPID, ILMJOB.FROMTABLESPACE, ILMJOB.TOTABLESPACE, ILMlJOB.STARTTIME FROM ILMJOB
+        EXECUTE IMMEDIATE 'SELECT ILMTASK.STEPID, ILMJOB.FROMTABLESPACE, ILMJOB.TOTABLESPACE, ILMJOB.STARTTIME FROM ILMJOB
                             INNER JOIN ILMTASK on ILMTASK.JOBID = ILMJOB.ID
                             WHERE ILMTASK.ID = (SELECT MAX(ID) FROM ILMTASK WHERE JOBID = :1)'  
-            INTO STEP_ID, FROM_TBS, TO_TBS, JOB_START_TSP USING I_RESUME_JOB_ID;
+            INTO RESUME_STEP_ID, FROM_TBS, TO_TBS, JOB_START_TIMESTAMP USING I_RESUME_JOB_ID;
             
-        IF (INSTR(STEP_ID, '_') > 0 ) THEN   -- step ID has move sequence and operation id
-            CURRENT_MOVE_SEQUENCE := TO_NUMBER(SUBSTR(STEP_ID, 1, INSTR(STEP_ID, '_')-1));
-            CURRENT_OPERATION_ID := TO_NUMBER(SUBSTR(STEP_ID, INSTR(STEP_ID, '_') + 1, LENGTH(STEP_ID)));
-        ELSE
-          CURRENT_OPERATION_ID := TO_NUMBER(STEP_ID);
+        IF RESUME_STEP_ID IS NOT NULL THEN   -- step ID has move sequence and operation id
+            RESUME_TABLE_SEQUENCE:=GET_RESUME_TABLE_SEQUENCE(RESUME_STEP_ID);
+            RESUME_PARTITION_SEQUENCE:=GET_RESUME_PARTITION_SEQUENCE(RESUME_STEP_ID);
         END IF;
-        
+
         -- change job status to STARTED
-        CURRENT_JOB_ID := I_RESUME_JOB_ID;
+        CURRENT_JOB_ID:=I_RESUME_JOB_ID;
         EXECUTE IMMEDIATE 'UPDATE ILMJOB SET STATUS = :1 WHERE ID = :2' USING ILM_CORE.JOBSTATUS_STARTED, CURRENT_JOB_ID;
         LOG_MESSAGE('Resuming existing job [ID=' || CURRENT_JOB_ID || '] to migrate partitions from '|| FROM_STAGE ||' to ' || TO_STAGE);
       ELSE
@@ -179,19 +244,16 @@ create or replace PACKAGE BODY ILM_CORE AS
       END IF;
   
     ELSE -- new JOB
-      JOB_START_TSP := SYSTIMESTAMP;
+      JOB_START_TIMESTAMP:=SYSTIMESTAMP;
       
       -- get source and target tablespace
-      FROM_TBS := ILM_COMMON.GET_TABLESPACE_NAME(FROM_STAGE);
-      TO_TBS := ILM_COMMON.GET_TABLESPACE_NAME(TO_STAGE, JOB_START_TSP);
-      
-      CURRENT_MOVE_SEQUENCE := 0;
-      CURRENT_OPERATION_ID := 0;
+      FROM_TBS:=ILM_COMMON.GET_TABLESPACE_NAME(FROM_STAGE);
+      TO_TBS:=ILM_COMMON.GET_TABLESPACE_NAME(TO_STAGE, JOB_START_TIMESTAMP);
     
       -- create ILMJOB
       SELECT ILMJOB_SEQUENCE.nextval INTO CURRENT_JOB_ID FROM DUAL;
       INSERT INTO ILMJOB(ID, JOBNAME, STATUS, FROMTABLESPACE, TOTABLESPACE, STARTTIME)
-      VALUES (CURRENT_JOB_ID, FROM_STAGE ||'2'||TO_STAGE||'_' || TO_CHAR(SYSTIMESTAMP, 'yyyymmdd_HH24miss') , JOBSTATUS_STARTED, FROM_TBS, TO_TBS, JOB_START_TSP);
+      VALUES (CURRENT_JOB_ID, FROM_STAGE ||'2'||TO_STAGE||'_' || TO_CHAR(SYSTIMESTAMP, 'yyyymmdd_HH24miss') , JOBSTATUS_STARTED, FROM_TBS, TO_TBS, JOB_START_TIMESTAMP);
       LOG_MESSAGE('Created new ILM JOB[ID=' || CURRENT_JOB_ID || '] to migrate partitions from '|| FROM_STAGE ||' to ' || TO_STAGE);
     END IF;
   
@@ -205,8 +267,7 @@ create or replace PACKAGE BODY ILM_CORE AS
     ELSIF I_JOB = HOT2COLD_JOB THEN
       RUN_HOT2WARM_JOB;
     END IF;
-   
-    CURRENT_MOVE_SEQUENCE := null;
+
     -- job is compoleted
     UPDATE ILMJOB SET STATUS = JOBSTATUS_ENDED, ENDTIME = SYSTIMESTAMP WHERE ID = CURRENT_JOB_ID;
     LOG_MESSAGE('ILM JOB[ID=' || CURRENT_JOB_ID || '] is successfully completed');
@@ -219,12 +280,118 @@ create or replace PACKAGE BODY ILM_CORE AS
       COMMIT;
       raise;
   END;
+
+
+  -----------------------------------------------------------------------------------------------------------------
+  -- 
+  -----------------------------------------------------------------------------------------------------------------
+  FUNCTION GET_RESUME_TABLE_SEQUENCE(I_STEP_ID in VARCHAR2) RETURN NUMBER AS
+    MOVE_SEQUENCE NUMBER:=0;
+    I_TABLE_NAME VARCHAR2(30);
+  BEGIN
+    I_TABLE_NAME:=REGEXP_SUBSTR(I_STEP_ID, '[^#]+', 1, 2);
+    IF I_TABLE_NAME IS NOT NULL THEN
+       EXECUTE IMMEDIATE 'SELECT MOVESEQUENCE FROM ILMMANAGEDTABLE WHERE TABLENAME=:1' INTO MOVE_SEQUENCE USING I_TABLE_NAME;
+    END IF;
+    RETURN MOVE_SEQUENCE;
+  END;
+  
+  
+  -----------------------------------------------------------------------------------------------------------------
+  -- 
+  -----------------------------------------------------------------------------------------------------------------
+  FUNCTION GET_RESUME_PARTITION_SEQUENCE(I_STEP_ID in VARCHAR2) RETURN NUMBER AS
+    PARTITION_SEQUENCE NUMBER:=0;
+    I_TABLE_NAME VARCHAR2(30);
+    I_PARTITION_NAME VARCHAR2(30);
+  BEGIN
+    I_TABLE_NAME:=REGEXP_SUBSTR(I_STEP_ID, '[^#]+', 1, 2);
+    I_PARTITION_NAME:=REGEXP_SUBSTR(I_STEP_ID, '[^#]+', 1, 4);
+    IF I_TABLE_NAME IS NOT NULL AND I_PARTITION_NAME IS NOT NULL THEN
+       EXECUTE IMMEDIATE 'SELECT PARTITION_POSITION FROM USER_TAB_PARTITIONS WHERE TABLE_NAME=:1 AND PARTITION_NAME=:2' INTO PARTITION_SEQUENCE USING I_TABLE_NAME, I_PARTITION_NAME;
+    END IF;
+    RETURN PARTITION_SEQUENCE;
+  END;
+  
+  
+  -----------------------------------------------------------------------------------------------------------------
+  -- 
+  -----------------------------------------------------------------------------------------------------------------
+  FUNCTION CONSTRUCT_STEP_ID(L1_STEP_ID in NUMBER, I_TABLE_NAME in VARCHAR2 default null, L2_STEP_ID in NUMBER default null, I_PARTITION_NAME in VARCHAR default null, L3_STEP_ID in NUMBER default null) RETURN VARCHAR2 AS
+  BEGIN
+    return L1_STEP_ID || '#' || I_TABLE_NAME || '#' || L2_STEP_ID || '#' || I_PARTITION_NAME || '#' || L3_STEP_ID;
+  END;
+  
+  PROCEDURE DECODE_STEP_ID(I_STEP_ID in VARCHAR2, L1_STEP_ID out NUMBER, I_TABLE_NAME out VARCHAR2, L2_STEP_ID out NUMBER, I_PARTITION_NAME out VARCHAR, L3_STEP_ID out NUMBER) AS
+  BEGIN
+    L1_STEP_ID:=REGEXP_SUBSTR(I_STEP_ID, '[^#]+', 1, 1);
+    I_TABLE_NAME:=REGEXP_SUBSTR(I_STEP_ID, '[^#]+', 1, 2);
+    L2_STEP_ID:=REGEXP_SUBSTR(I_STEP_ID, '[^#]+', 1, 3);
+    I_PARTITION_NAME:=REGEXP_SUBSTR(I_STEP_ID, '[^#]+', 1, 4);
+    L3_STEP_ID:=REGEXP_SUBSTR(I_STEP_ID, '[^#]+', 1, 5);
+  END;
+  
+  
+  -----------------------------------------------------------------------------------------------------------------
+  -- 
+  -----------------------------------------------------------------------------------------------------------------
+  FUNCTION PERMIT_STEP_ID(CURRENT_STEP_ID in VARCHAR2, RESUME_STEP_ID in VARCHAR2) RETURN NUMBER AS
+    CURRENT_L1_STEP_ID NUMBER;
+    CURRENT_I_TABLE_NAME VARCHAR2(30);
+    CURRENT_L2_STEP_ID NUMBER;
+    CURRENT_I_PARTITION_NAME VARCHAR2(30);
+    CURRENT_L3_STEP_ID NUMBER;
+    LAST_L1_STEP_ID NUMBER;
+    LAST_I_TABLE_NAME VARCHAR2(30);
+    LAST_L2_STEP_ID NUMBER;
+    LAST_I_PARTITION_NAME VARCHAR2(30);
+    LAST_L3_STEP_ID NUMBER;
+  BEGIN
+    IF RESUME_STEP_ID IS NULL THEN RETURN 1; END IF;
+    
+    DECODE_STEP_ID(CURRENT_STEP_ID, CURRENT_L1_STEP_ID, CURRENT_I_TABLE_NAME, CURRENT_L2_STEP_ID, CURRENT_I_PARTITION_NAME, CURRENT_L3_STEP_ID);
+    DECODE_STEP_ID(RESUME_STEP_ID, LAST_L1_STEP_ID, LAST_I_TABLE_NAME, LAST_L2_STEP_ID, LAST_I_PARTITION_NAME, LAST_L3_STEP_ID);
+    
+    -- L1 check
+    IF LAST_L1_STEP_ID IS NOT NULL THEN
+      IF CURRENT_L1_STEP_ID < LAST_L1_STEP_ID 
+        THEN RETURN 0; -- inferior L1, forbid
+      END IF;
+    END IF;
+    
+    -- L2 check
+    IF LAST_I_TABLE_NAME IS NOT NULL THEN
+      IF CURRENT_I_TABLE_NAME != LAST_I_TABLE_NAME  -- table has change, new L2 cycle, allow
+        THEN RETURN 1;
+      ELSIF CURRENT_L2_STEP_ID < LAST_L2_STEP_ID 
+        THEN RETURN 0;
+      END IF;
+    END IF;
+    
+    -- L3 check
+    IF LAST_I_PARTITION_NAME IS NOT NULL THEN
+      IF CURRENT_I_PARTITION_NAME != LAST_I_PARTITION_NAME 
+        THEN RETURN 1;
+      ELSIF CURRENT_L3_STEP_ID < LAST_L3_STEP_ID 
+        THEN RETURN 0;
+      END IF;
+    END IF;
+    
+    
+    RETURN 1;
+  END;
   
   -----------------------------------------------------------------------------------------------------------------
   -- Proxy of all tasks
   -----------------------------------------------------------------------------------------------------------------
-  PROCEDURE RUN_TASK(OPERATION in VARCHAR2, CURRENT_STEP_ID in VARCHAR2) AS
+  PROCEDURE RUN_TASK(OPERATION in VARCHAR2, I_CURRENT_STEP_ID in VARCHAR2) AS
   BEGIN
+    -- verfiy step id
+    If PERMIT_STEP_ID (I_CURRENT_STEP_ID, RESUME_STEP_ID)=0 THEN
+      RETURN;
+    END IF;
+    CURRENT_STEP_ID:=I_CURRENT_STEP_ID;
+  
     -- create a new record in ILMTASK
     INSERT INTO ILMTASK(ID, JOBID, STEPID, STATUS, STARTTIME) 
     VALUES (ILMTASK_SEQUENCE.nextval, CURRENT_JOB_ID, CURRENT_STEP_ID, TASKSTATUS_STARTED,  SYSTIMESTAMP)
@@ -252,7 +419,7 @@ create or replace PACKAGE BODY ILM_CORE AS
   PROCEDURE LOG_MESSAGE (I_MESSAGE in VARCHAR2) AS
     PREFIX VARCHAR2(100);
   BEGIN
-    PREFIX := '[JOBID='||CURRENT_JOB_ID||',TASKID='||CURRENT_TASK_ID||',MOVESEQUENCE='||CURRENT_MOVE_SEQUENCE||',OPERATIONID='||CURRENT_OPERATION_ID||']';
+    PREFIX:='[JOB_ID='||CURRENT_JOB_ID||',TASK_ID='||CURRENT_TASK_ID||',CURRENT_STEP_ID='||CURRENT_STEP_ID||']';
     INSERT INTO ILMLOG(ID, MESSAGE, WHENCREATED) VALUES(ILMLOG_SEQUENCE.nextval, SUBSTR(PREFIX || I_MESSAGE, 1, 400), SYSTIMESTAMP);
   END;
   
@@ -324,7 +491,7 @@ create or replace PACKAGE BODY ILM_CORE AS
         from USER_LOB_SUBPARTITIONS subpart inner join USER_LOB_PARTITIONS part on subpart.LOB_PARTITION_NAME=part.LOB_PARTITION_NAME
         WHERE part.PARTITION_NAME=I_PARTITION_NAME AND subpart.TABLESPACE_NAME=I_FROM_TBS AND subpart.TABLE_NAME=I_TABLE_NAME)
     LOOP
-      COLUMN_NAME := spRow.COLUMN_NAME;
+      COLUMN_NAME:=spRow.COLUMN_NAME;
       -- update metadata in ILMMANAGEDTABLE
       ILM_COMMON.UPDATE_ILMTABLE_STATUS(I_TABLE_NAME, FROM_STAGE, ILMTABLESTATUS_LOBMOVE);
     
@@ -414,7 +581,7 @@ create or replace PACKAGE BODY ILM_CORE AS
   -- Create a partition in a table at MAXVALUE bound.
   -----------------------------------------------------------------------------------------------------------------
   PROCEDURE CREATE_PARTITION(I_TABLE_NAME in VARCHAR2, I_PARTITION_NAME in VARCHAR2, I_HIGH_VALUE in TIMESTAMP) AS
-    PARTITION_EXIST NUMBER(1) := 0;
+    PARTITION_EXIST NUMBER(1):=0;
   BEGIN
     EXECUTE IMMEDIATE 'SELECT COUNT(1) FROM USER_TAB_PARTITIONS WHERE TABLE_NAME=:1 AND PARTITION_NAME=:2' INTO PARTITION_EXIST USING I_TABLE_NAME, I_PARTITION_NAME;
     IF (PARTITION_EXIST=0) THEN
@@ -455,13 +622,13 @@ create or replace PACKAGE BODY ILM_CORE AS
     DBMS_METADATA.SET_TRANSFORM_PARAM (DBMS_METADATA.SESSION_TRANSFORM,'SEGMENT_ATTRIBUTES', true);
     DBMS_METADATA.SET_TRANSFORM_PARAM (DBMS_METADATA.SESSION_TRANSFORM,'REF_CONSTRAINTS', false);
     DBMS_METADATA.SET_TRANSFORM_PARAM (DBMS_METADATA.SESSION_TRANSFORM,'CONSTRAINTS', false);
-    CREATE_STATEMENT := DBMS_METADATA.GET_DDL('TABLE', I_TABLE_NAME);
+    CREATE_STATEMENT:=DBMS_METADATA.GET_DDL('TABLE', I_TABLE_NAME);
 
     -- replace table name
-    CREATE_STATEMENT := REGEXP_REPLACE(CREATE_STATEMENT, '"'||I_TABLE_NAME||'"', '"'||NEW_TABLE_NAME||'"');
+    CREATE_STATEMENT:=REGEXP_REPLACE(CREATE_STATEMENT, '"'||I_TABLE_NAME||'"', '"'||NEW_TABLE_NAME||'"');
     
     -- replace tablespace
-    CREATE_STATEMENT := REGEXP_REPLACE(CREATE_STATEMENT,  'TABLESPACE \"(\S)*"', 'TABLESPACE "' || I_TO_TBS || '"');
+    CREATE_STATEMENT:=REGEXP_REPLACE(CREATE_STATEMENT,  'TABLESPACE \"(\S)*"', 'TABLESPACE "' || I_TO_TBS || '"');
 
     LOG_MESSAGE('Create new table ' || NEW_TABLE_NAME|| ' in tablespace ' || I_TO_TBS);
     EXECUTE IMMEDIATE CREATE_STATEMENT;
