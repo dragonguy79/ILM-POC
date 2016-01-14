@@ -23,6 +23,7 @@ create or replace PACKAGE BODY ILM_COMMON AS
      SELECT COUNT(*) INTO ROW_FOUND FROM USER_TABLES WHERE TABLE_NAME = UPPER(I_TABLE_NAME) AND ROWNUM <= 1;
      RETURN ROW_FOUND;
   END;
+  
   -----------------------------------------------------------------------------------------------------------------
   -- Check that a JOB does exist
     -- return 0 if JOB does not exist
@@ -33,6 +34,32 @@ create or replace PACKAGE BODY ILM_COMMON AS
   BEGIN
      SELECT COUNT(*) INTO ROW_FOUND FROM ILMJOB WHERE ID = JOB_ID AND STATUS != ILM_CORE.JOBSTATUS_ENDED AND ROWNUM <= 1;
      RETURN ROW_FOUND;
+  END;
+  
+  -----------------------------------------------------------------------------------------------------------------
+  -- Check that a new job can be created.
+    -- return 0 if cannot find previous unfinished job with same job type.
+    -- return job ID if previous unfinished job is found.
+  -----------------------------------------------------------------------------------------------------------------
+  FUNCTION GET_PREVIOUS_UNFINISHED_JOB(JOB_TYPE in VARCHAR2) RETURN NUMBER AS
+    I_ID NUMBER;
+    I_STATUS VARCHAR2(30);
+  BEGIN
+    EXECUTE IMMEDIATE 'SELECT DISTINCT
+       FIRST_VALUE(ID) OVER (ORDER BY ID DESC),
+       FIRST_VALUE(STATUS)  OVER (ORDER BY ID DESC)
+       FROM ILMJOB WHERE JOBNAME LIKE ''' || JOB_TYPE || '%''' INTO I_ID, I_STATUS;
+    
+    -- if previous job is unfinished
+    IF I_STATUS != ILM_CORE.JOBSTATUS_ENDED THEN 
+      RETURN I_ID;
+    ELSE 
+      RETURN 0;
+    END IF;
+    
+    -- if no such job type exists before, permit it
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN RETURN 0;
   END;
   
   -----------------------------------------------------------------------------------------------------------------

@@ -204,6 +204,7 @@ create or replace PACKAGE BODY ILM_CORE AS
   -- Run job
   -----------------------------------------------------------------------------------------------------------------
   PROCEDURE RUN_JOB(I_JOB VARCHAR2, I_RESUME_JOB_ID in NUMBER DEFAULT NULL) AS
+    I_UNFINISHED_JOB_ID NUMBER;
   BEGIN
     -- initialize stages
     IF I_JOB = HOT2WARM_JOB THEN
@@ -232,7 +233,7 @@ create or replace PACKAGE BODY ILM_CORE AS
             
         IF RESUME_STEP_ID IS NOT NULL THEN   -- step ID has move sequence and operation id
             RESUME_TABLE_SEQUENCE:=GET_RESUME_TABLE_SEQUENCE(RESUME_STEP_ID);
-            RESUME_PARTITION_SEQUENCE:=GET_RESUME_PARTITION_SEQUENCE(RESUME_STEP_ID);
+            RESUME_PARTITION_SEQUENCE:=GET_RESUME_PARTITION_SEQUENCE(RESUME_STEP_ID, FROM_STAGE);
         END IF;
 
         -- change job status to STARTED
@@ -244,17 +245,24 @@ create or replace PACKAGE BODY ILM_CORE AS
       END IF;
   
     ELSE -- new JOB
-      JOB_START_TIMESTAMP:=SYSTIMESTAMP;
+      I_UNFINISHED_JOB_ID := ILM_COMMON.GET_PREVIOUS_UNFINISHED_JOB(I_JOB);
       
-      -- get source and target tablespace
-      FROM_TBS:=ILM_COMMON.GET_TABLESPACE_NAME(FROM_STAGE);
-      TO_TBS:=ILM_COMMON.GET_TABLESPACE_NAME(TO_STAGE, JOB_START_TIMESTAMP);
-    
-      -- create ILMJOB
-      SELECT ILMJOB_SEQUENCE.nextval INTO CURRENT_JOB_ID FROM DUAL;
-      INSERT INTO ILMJOB(ID, JOBNAME, STATUS, FROMTABLESPACE, TOTABLESPACE, STARTTIME)
-      VALUES (CURRENT_JOB_ID, FROM_STAGE ||'2'||TO_STAGE||'_' || TO_CHAR(SYSTIMESTAMP, 'yyyymmdd_HH24miss') , JOBSTATUS_STARTED, FROM_TBS, TO_TBS, JOB_START_TIMESTAMP);
-      LOG_MESSAGE('Created new ILM JOB[ID=' || CURRENT_JOB_ID || '] to migrate partitions from '|| FROM_STAGE ||' to ' || TO_STAGE);
+      IF I_UNFINISHED_JOB_ID = 0 THEN
+        JOB_START_TIMESTAMP:=SYSTIMESTAMP;
+        
+        -- get source and target tablespace
+        FROM_TBS:=ILM_COMMON.GET_TABLESPACE_NAME(FROM_STAGE);
+        TO_TBS:=ILM_COMMON.GET_TABLESPACE_NAME(TO_STAGE, JOB_START_TIMESTAMP);
+      
+        -- create ILMJOB
+        SELECT ILMJOB_SEQUENCE.nextval INTO CURRENT_JOB_ID FROM DUAL;
+        INSERT INTO ILMJOB(ID, JOBNAME, STATUS, FROMTABLESPACE, TOTABLESPACE, STARTTIME)
+        VALUES (CURRENT_JOB_ID, I_JOB||'_' || TO_CHAR(SYSTIMESTAMP, 'yyyymmdd_HH24miss') , JOBSTATUS_STARTED, FROM_TBS, TO_TBS, JOB_START_TIMESTAMP);
+        LOG_MESSAGE('Created new ILM JOB[ID=' || CURRENT_JOB_ID || '] to migrate partitions from '|| FROM_STAGE ||' to ' || TO_STAGE);
+      ELSE
+        -- found previous non-completed job
+        THROW_EXCEPTION('New job of type '|| I_JOB || ' cannot be created because previous job of same type did not end successfully. Please resume previous job with ID ' || I_UNFINISHED_JOB_ID);
+      END IF;
     END IF;
   
     -- run operations for designated move
@@ -300,13 +308,18 @@ create or replace PACKAGE BODY ILM_CORE AS
   -----------------------------------------------------------------------------------------------------------------
   -- 
   -----------------------------------------------------------------------------------------------------------------
-  FUNCTION GET_RESUME_PARTITION_SEQUENCE(I_STEP_ID in VARCHAR2) RETURN NUMBER AS
+  FUNCTION GET_RESUME_PARTITION_SEQUENCE(I_STEP_ID in VARCHAR2, I_FROM_STAGE in VARCHAR2) RETURN NUMBER AS
     PARTITION_SEQUENCE NUMBER:=0;
     I_TABLE_NAME VARCHAR2(30);
     I_PARTITION_NAME VARCHAR2(30);
   BEGIN
     I_TABLE_NAME:=REGEXP_SUBSTR(I_STEP_ID, '[^#]+', 1, 2);
     I_PARTITION_NAME:=REGEXP_SUBSTR(I_STEP_ID, '[^#]+', 1, 4);
+    
+    IF I_FROM_STAGE = COLD_STAGE THEN
+      EXECUTE IMMEDIATE 'SELECT COLDTABLENAME FROM ILMMANAGEDTABLE WHERE TABLENAME=:1' INTO I_TABLE_NAME USING I_TABLE_NAME;
+    END IF;
+    
     IF I_TABLE_NAME IS NOT NULL AND I_PARTITION_NAME IS NOT NULL THEN
        EXECUTE IMMEDIATE 'SELECT PARTITION_POSITION FROM USER_TAB_PARTITIONS WHERE TABLE_NAME=:1 AND PARTITION_NAME=:2' INTO PARTITION_SEQUENCE USING I_TABLE_NAME, I_PARTITION_NAME;
     END IF;
