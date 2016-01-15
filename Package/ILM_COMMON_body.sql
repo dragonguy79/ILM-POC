@@ -71,17 +71,7 @@ create or replace PACKAGE BODY ILM_COMMON AS
     EXECUTE IMMEDIATE 'SELECT '|| case STAGE when ILM_CORE.HOT_STAGE then 'HOTRETENTION' when ILM_CORE.WARM_STAGE then 'WARMRETENTION' when ILM_CORE.COLD_STAGE then 'COLDRETENTION' else 'IMPOSSIBLE_COLUMN' end || ' FROM ILMMANAGEDTABLE WHERE TABLENAME = :1' INTO RETENTION_MONTH USING TABLE_NAME;
     RETURN RETENTION_MONTH;
   END;
-  
-  -----------------------------------------------------------------------------------------------------------------
-  -- Update status of tables in ILMMANAGEDTABLE
-  -----------------------------------------------------------------------------------------------------------------
-  PROCEDURE UPDATE_ILMTABLE_STATUS(I_TABLE_NAME in VARCHAR2, I_STAGE in VARCHAR2, I_STATUS in VARCHAR2) AS
-  BEGIN
-    -- only update if table is provided
-    IF (I_TABLE_NAME IS NOT NULL AND I_STAGE IS NOT NULL) THEN
-      EXECUTE IMMEDIATE 'UPDATE ILMMANAGEDTABLE SET '|| case I_STAGE when ILM_CORE.HOT_STAGE then 'HOTSTATUS' when ILM_CORE.WARM_STAGE then 'WARMSTATUS' when ILM_CORE.COLD_STAGE then 'COLDSTATUS' else 'IMPOSSIBLE_COLUMN' end || '=:1, LASTMODIFIED=SYSTIMESTAMP WHERE TABLENAME=:2' USING I_STATUS, I_TABLE_NAME;
-    END IF;
-  END;
+
   
   -----------------------------------------------------------------------------------------------------------------
   -- Get data compression clause base on setting in ILMMANAGEDTABLE table
