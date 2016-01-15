@@ -25,15 +25,36 @@ create or replace PACKAGE BODY ILM_COMMON AS
   END;
   
   -----------------------------------------------------------------------------------------------------------------
-  -- Check that a JOB does exist
-    -- return 0 if JOB does not exist
-    -- return 1 if tablespace found
+  -- Check that a job can resumed. A job can be resumed if it did not end completely, and that there is no any more recent run of same job type.
+    -- return 0 if the job cannot be resume
+    -- return 1 if the job can be resume
   -----------------------------------------------------------------------------------------------------------------
-  FUNCTION CAN_RESUME_JOB(JOB_ID in NUMBER) RETURN NUMBER AS
-    ROW_FOUND NUMBER := 0;
+  FUNCTION CAN_RESUME_JOB(I_JOB_ID in NUMBER) RETURN NUMBER AS
+    I_JOB_NAME VARCHAR2(50);
+    I_STATUS VARCHAR2(10);
+    I_JOB_TYPE VARCHAR2(50);
+    CNT NUMBER;
   BEGIN
-     SELECT COUNT(*) INTO ROW_FOUND FROM ILMJOB WHERE ID = JOB_ID AND STATUS != ILM_CORE.JOBSTATUS_ENDED AND ROWNUM <= 1;
-     RETURN ROW_FOUND;
+    EXECUTE IMMEDIATE 'SELECT JOBNAME, STATUS FROM ILMJOB WHERE ID=:1' INTO I_JOB_NAME, I_STATUS USING I_JOB_ID;
+    
+    -- cannot resume job that was completed
+    IF I_STATUS = ILM_CORE.JOBSTATUS_ENDED
+      THEN RETURN 0;
+    END IF;
+
+    -- check that if same job type has existed after the failed job, disallow job 
+    I_JOB_TYPE := REGEXP_SUBSTR(I_JOB_NAME, '[^_]+', 1, 1);
+    EXECUTE IMMEDIATE 'SELECT COUNT(*) FROM ILMJOB WHERE ID>:1 AND JOBNAME LIKE :2' INTO CNT USING I_JOB_ID, I_JOB_TYPE ||'%';
+    IF CNT > 0 
+      THEN RETURN 0;
+    END IF;
+
+    -- can resume job
+    RETURN 1;
+    
+    -- if no such job type exists before, permit it
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN RETURN 0;
   END;
   
   -----------------------------------------------------------------------------------------------------------------

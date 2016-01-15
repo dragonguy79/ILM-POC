@@ -1,30 +1,37 @@
 -----------------------------------
 -- Setup test
 -----------------------------------
-@IT-BeforeTest.sql;
+@../BeforeTest.sql;
 
 
 -----------------------------------
 -- Run test
 -----------------------------------
--- run HOT2COLD job
+-- run HOT2WARM job
 BEGIN
-  ILM_CORE.RUN_JOB(I_JOB => 'HOT2COLD');
---rollback; 
+  ILM_CORE.RUN_JOB(I_JOB => 'HOT2WARM');
 END;
 /
-@../UT/UT-HOT2COLD.sql;
+@TestHOT2WARM.sql;
+
+-- run WARM2COLD job
+BEGIN
+  ILM_CORE.RUN_JOB(I_JOB => 'WARM2COLD');
+END;
+/
+-- unit test WARM2COLD job
+@TestWARM2COLD.sql;
 
 -- run COLD2DORMANT job
 BEGIN
   ILM_CORE.RUN_JOB(I_JOB => 'COLD2DORMANT');
---rollback; 
 END;
 /
-@../UT/UT-COLD2DORMANT.sql
+-- unit test COLD2DORMANT job
+@TestCOLD2DORMANT.sql
 
 
 -----------------------------------
 -- Cleanup test
 -----------------------------------
-@IT-AfterTest.sql;
+@../AfterTest.sql;
