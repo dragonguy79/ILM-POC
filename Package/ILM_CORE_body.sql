@@ -63,6 +63,7 @@ create or replace PACKAGE BODY ILM_CORE AS
       
   END;
   
+  
   -----------------------------------------------------------------------------------------------------------------
   -- Job to move data from WARM to COLD
   -----------------------------------------------------------------------------------------------------------------
@@ -150,6 +151,7 @@ create or replace PACKAGE BODY ILM_CORE AS
       END LOOP;
   END;
 
+
   -----------------------------------------------------------------------------------------------------------------
   -- Job to move data from COLD to DORMANT
   -----------------------------------------------------------------------------------------------------------------
@@ -226,6 +228,9 @@ create or replace PACKAGE BODY ILM_CORE AS
   
   -----------------------------------------------------------------------------------------------------------------
   -- Run job
+    -- I_JOB specifiy type of move. Specify either: HOT2WARM, WARM2COLD, COLD2DORMANT or HOT2COLD
+    -- I_RESUME_JOB_ID value is provided to resume an existing job.
+    -- Note that a new job cannot be created if previous job of same type did not complete successfully.
   -----------------------------------------------------------------------------------------------------------------
   PROCEDURE RUN_JOB(I_JOB VARCHAR2, I_RESUME_JOB_ID in NUMBER DEFAULT NULL) AS
     I_UNFINISHED_JOB_ID NUMBER;
@@ -316,7 +321,7 @@ create or replace PACKAGE BODY ILM_CORE AS
 
 
   -----------------------------------------------------------------------------------------------------------------
-  -- 
+  -- Get table sequence from step ID. Table sequence is consulted from ILMMANAGED.MOVESEQUENCE.
   -----------------------------------------------------------------------------------------------------------------
   FUNCTION GET_RESUME_TABLE_SEQUENCE(I_STEP_ID in VARCHAR2) RETURN NUMBER AS
     MOVE_SEQUENCE NUMBER:=0;
@@ -331,7 +336,9 @@ create or replace PACKAGE BODY ILM_CORE AS
   
   
   -----------------------------------------------------------------------------------------------------------------
-  -- 
+  -- Get partition name from step ID.
+    -- Note that step ID contains only HOT table name, so it needs to find out the COLD table name in order to get the right partition sequence.
+    -- Partition sequence is consulted from USER_TAB_PARTITIONS.PARTITION_POSITION
   -----------------------------------------------------------------------------------------------------------------
   FUNCTION GET_RESUME_PARTITION_SEQUENCE(I_STEP_ID in VARCHAR2, I_FROM_STAGE in VARCHAR2) RETURN NUMBER AS
     PARTITION_SEQUENCE NUMBER:=0;
@@ -351,8 +358,10 @@ create or replace PACKAGE BODY ILM_CORE AS
     RETURN PARTITION_SEQUENCE;
   END;
   
+  
   -----------------------------------------------------------------------------------------------------------------
-  -- 
+  -- A step id might indicate a step that has ended successfully. This method returns next step ID if current step is completed,
+  -- or it returns current step ID if current step is not yet completed.
   -----------------------------------------------------------------------------------------------------------------
   FUNCTION INCREMENT_COMPLETED_STEP(I_JOB_ID in NUMBER, I_STEP_ID in VARCHAR2) RETURN VARCHAR2 AS
     L1_STEP_ID NUMBER;
@@ -384,9 +393,13 @@ create or replace PACKAGE BODY ILM_CORE AS
   END;
   
   
-  
   -----------------------------------------------------------------------------------------------------------------
-  -- 
+  -- Construct a step id from subpart of information, which are:
+    -- Level 1 step id
+    -- Table name
+    -- Level 2 step id
+    -- Partition name
+    -- Level 3 step id
   -----------------------------------------------------------------------------------------------------------------
   FUNCTION CONSTRUCT_STEP_ID(L1_STEP_ID in NUMBER, I_TABLE_NAME in VARCHAR2 default null, L2_STEP_ID in NUMBER default null, I_PARTITION_NAME in VARCHAR default null, L3_STEP_ID in NUMBER default null) RETURN VARCHAR2 AS
   BEGIN
@@ -395,7 +408,12 @@ create or replace PACKAGE BODY ILM_CORE AS
   
   
   -----------------------------------------------------------------------------------------------------------------
-  -- 
+  -- Break a step id into subpart of information, which are:
+    -- Level 1 step id
+    -- Table name
+    -- Level 2 step id
+    -- Partition name
+    -- Level 3 step id
   -----------------------------------------------------------------------------------------------------------------
   PROCEDURE DECODE_STEP_ID(I_STEP_ID in VARCHAR2, L1_STEP_ID out NUMBER, I_TABLE_NAME out VARCHAR2, L2_STEP_ID out NUMBER, I_PARTITION_NAME out VARCHAR, L3_STEP_ID out NUMBER) AS
   BEGIN
@@ -408,7 +426,9 @@ create or replace PACKAGE BODY ILM_CORE AS
   
   
   -----------------------------------------------------------------------------------------------------------------
-  -- 
+  -- Permit a step to run if the step is not inferior to resumed step.
+    -- because table name and partition name will change, it permit steps if it detects either table or partition has changed.
+    -- it checks mainly on Level1, Level2 and Level3 step id with same table name and partition name.
   -----------------------------------------------------------------------------------------------------------------
   FUNCTION PERMIT_STEP_ID(CURRENT_STEP_ID in VARCHAR2, RESUME_STEP_ID in VARCHAR2) RETURN NUMBER AS
     CURRENT_L1_STEP_ID NUMBER;
@@ -452,12 +472,15 @@ create or replace PACKAGE BODY ILM_CORE AS
       END IF;
     END IF;
     
-    
     RETURN 1;
   END;
   
+  
   -----------------------------------------------------------------------------------------------------------------
   -- Proxy of all tasks
+    -- It logs message to ILMLOG
+    -- Exeception raised from task is caught and logged
+    -- Duration of task execution is logged.
   -----------------------------------------------------------------------------------------------------------------
   PROCEDURE RUN_TASK(OPERATION in VARCHAR2, I_CURRENT_STEP_ID in VARCHAR2) AS
   BEGIN
@@ -488,18 +511,20 @@ create or replace PACKAGE BODY ILM_CORE AS
       raise;
   END;
   
+  
   -----------------------------------------------------------------------------------------------------------------
   -- Log message in ILMLOG table
   -----------------------------------------------------------------------------------------------------------------
   PROCEDURE LOG_MESSAGE (I_MESSAGE in VARCHAR2) AS
     PREFIX VARCHAR2(100);
   BEGIN
-    PREFIX:='[JOB_ID='||CURRENT_JOB_ID||',TASK_ID='||CURRENT_TASK_ID||',CURRENT_STEP_ID='||CURRENT_STEP_ID||']';
+    PREFIX:='[JOB_ID='||CURRENT_JOB_ID||',TASK_ID='||CURRENT_TASK_ID||',STEP_ID='||CURRENT_STEP_ID||']';
     INSERT INTO ILMLOG(ID, MESSAGE, WHENCREATED) VALUES(ILMLOG_SEQUENCE.nextval, SUBSTR(PREFIX || I_MESSAGE, 1, 400), SYSTIMESTAMP);
   END;
   
+  
   -----------------------------------------------------------------------------------------------------------------
-  -- Proxy of all tasks
+  -- Throw exception by logging the exception and raise it.
   -----------------------------------------------------------------------------------------------------------------
   PROCEDURE THROW_EXCEPTION (ERROR_MESSAGE in VARCHAR2) AS
   BEGIN
@@ -519,9 +544,11 @@ create or replace PACKAGE BODY ILM_CORE AS
     END LOOP;
   END;
 
+
   ----------------------------------------------------------------------------------------------------------------
-  -- Update attribute of partition
-    -- Partition does not contain any data since they are stored in subpartitions, but still we need to update the attribute for correctness.
+  -- Update table attribute of a partition
+    -- Partition does not contain any data since data are stored in subpartitions, but still its attribute is updated for correctness 
+    -- in case future subpartitions are created in this partition.
   -----------------------------------------------------------------------------------------------------------------
   PROCEDURE MODIFY_PARTITION_TBS(I_TABLE_NAME in VARCHAR2, I_PARTITION_NAME in VARCHAR2, I_TO_TBS in VARCHAR2, COMPRESSION_CLAUSE in VARCHAR2 DEFAULT '') AS
   BEGIN
@@ -530,9 +557,10 @@ create or replace PACKAGE BODY ILM_CORE AS
     EXECUTE IMMEDIATE 'ALTER TABLE ' || I_TABLE_NAME || ' MODIFY DEFAULT ATTRIBUTES FOR PARTITION ' || I_PARTITION_NAME || ' ' || COMPRESSION_CLAUSE || ' TABLESPACE ' || I_TO_TBS;
   END;
   
+  
   ----------------------------------------------------------------------------------------------------------------
-  -- Move all subpartitioned lobs of a partition from one tablespace to another tablespace
-    -- Both LOB segments and indexes are moved together. The indexes are maintained by Oracle and always have USUABLE status.
+  -- Move all subpartitioned lobs from a partition to another tablespace
+    -- Both LOB segments and indexes are moved together. LOB indexes are maintained by Oracle and always have USUABLE status.
   -----------------------------------------------------------------------------------------------------------------
   PROCEDURE MOVE_SUBPARTITIONED_LOB(I_TABLE_NAME in VARCHAR2, I_PARTITION_NAME in VARCHAR2, I_FROM_TBS in VARCHAR2, I_TO_TBS in VARCHAR2) AS
     COLUMN_NAME varchar2(30);
@@ -556,8 +584,9 @@ create or replace PACKAGE BODY ILM_CORE AS
     END LOOP;
   END;
   
+  
   -----------------------------------------------------------------------------------------------------------------
-  -- Rebuild invalid global indexes of a table
+  -- Rebuild invalid global indexes of a table.
   -----------------------------------------------------------------------------------------------------------------
   PROCEDURE REBUILD_GLOBAL_INDEX(I_TABLE_NAME in VARCHAR2) AS
   BEGIN
@@ -570,7 +599,7 @@ create or replace PACKAGE BODY ILM_CORE AS
   END;
   
   ----------------------------------------------------------------------------------------------------------------
-  -- Move all subpartitioned indexes of a sinle partition, from one tablespace to another tablespace, and rebuild them
+  -- Move all subpartitioned indexes from a partition to another tablespace, and rebuild them.
   -----------------------------------------------------------------------------------------------------------------
   PROCEDURE MOVE_REBUILD_SUBPART_INDEX(I_TABLE_NAME in VARCHAR2, I_PARTITION_NAME in VARCHAR2, I_FROM_TBS in VARCHAR2, I_TO_TBS in VARCHAR2) AS
   BEGIN
@@ -585,9 +614,11 @@ create or replace PACKAGE BODY ILM_CORE AS
     END LOOP;
   END;
   
+  
   ----------------------------------------------------------------------------------------------------------------
-  -- Update attribute of partition index
-    -- Partition does not contain any data since they are stored in subpartitions, but still we need to update the attribute for correctness.
+  -- Update table attribute of partition index
+    -- Partition does not contain any data since index are stored in subpartitions, but still its attribute is updated for correctness 
+    -- in case future subpartitions are created in this partition.
   -----------------------------------------------------------------------------------------------------------------
   PROCEDURE MODIFY_PARTITION_INDEX_TBS(I_TABLE_NAME in VARCHAR2, I_PARTITION_NAME in VARCHAR2, I_TO_TBS in VARCHAR2) AS
   BEGIN
@@ -603,7 +634,7 @@ create or replace PACKAGE BODY ILM_CORE AS
   END;
   
   ----------------------------------------------------------------------------------------------------------------
-  -- Rebuild all subpartitioned indexes of a sinle partition, from one tablespace to another tablespace
+  -- Rebuild all subpartitioned indexes of a sinle partition, from one tablespace to another tablespace.
   -----------------------------------------------------------------------------------------------------------------
   PROCEDURE REBUILD_SUBPART_INDEX(I_TABLE_NAME in VARCHAR2, I_PARTITION_NAME in VARCHAR2) AS
   BEGIN
@@ -617,21 +648,30 @@ create or replace PACKAGE BODY ILM_CORE AS
     END LOOP;
   END;
    
+   
   -----------------------------------------------------------------------------------------------------------------
-  -- Create a partition in a table at MAXVALUE bound.
+  -- Create a partition in a table by spliting the partition at highest bound.
   -----------------------------------------------------------------------------------------------------------------
   PROCEDURE CREATE_PARTITION(I_TABLE_NAME in VARCHAR2, I_PARTITION_NAME in VARCHAR2, I_HIGH_VALUE in TIMESTAMP) AS
     PARTITION_EXIST NUMBER(1):=0;
+    HIGH_BOUND_PARTITION_NAME VARCHAR2(30);
   BEGIN
     EXECUTE IMMEDIATE 'SELECT COUNT(1) FROM USER_TAB_PARTITIONS WHERE TABLE_NAME=:1 AND PARTITION_NAME=:2' INTO PARTITION_EXIST USING I_TABLE_NAME, I_PARTITION_NAME;
+    -- create the partition only when such partition has not yet existed
     IF (PARTITION_EXIST=0) THEN
-      LOG_MESSAGE('Create a new partition ' || I_TABLE_NAME || '.' || I_PARTITION_NAME || ' with high value ' || I_HIGH_VALUE);
-      EXECUTE IMMEDIATE 'ALTER TABLE '||I_TABLE_NAME||' SPLIT PARTITION P9999_12 AT (''' ||I_HIGH_VALUE|| ''') INTO (PARTITION '||I_PARTITION_NAME||', PARTITION P9999_12) '||ILM_COMMON.GET_PARALLEL_CLAUSE();
+      -- get the name of high bound partition
+      EXECUTE IMMEDIATE 'SELECT DISTINCT FIRST_VALUE(PARTITION_NAME) OVER (ORDER BY PARTITION_POSITION DESC) FROM USER_TAB_PARTITIONS WHERE table_name=:1' 
+        INTO HIGH_BOUND_PARTITION_NAME USING I_TABLE_NAME;
+       
+      -- split partition
+      LOG_MESSAGE('Create a new partition ' || I_TABLE_NAME || '.' || I_PARTITION_NAME || ' with high value ' || I_HIGH_VALUE||', by splitting high bound partition '||HIGH_BOUND_PARTITION_NAME);
+      EXECUTE IMMEDIATE 'ALTER TABLE '||I_TABLE_NAME||' SPLIT PARTITION '||HIGH_BOUND_PARTITION_NAME||' AT (''' ||I_HIGH_VALUE|| ''') INTO (PARTITION '||I_PARTITION_NAME||', PARTITION '||HIGH_BOUND_PARTITION_NAME||') '||ILM_COMMON.GET_PARALLEL_CLAUSE();
     END IF;
   END;
 
+
   -----------------------------------------------------------------------------------------------------------------
-  -- Exchange a partition with corresponding temporary table.
+  -- Exchange a partition with a table.
   -----------------------------------------------------------------------------------------------------------------
   PROCEDURE EXCHANGE_PARTITION(I_PARTITION_TABLE_NAME in VARCHAR2, I_PARTITION_NAME in VARCHAR2, I_TABLE_NAME in VARCHAR2) AS
     TEMP_TABLE_NAME VARCHAR2(30);
@@ -640,8 +680,9 @@ create or replace PACKAGE BODY ILM_CORE AS
     EXECUTE IMMEDIATE 'ALTER TABLE ' || I_PARTITION_TABLE_NAME || ' EXCHANGE PARTITION ' || I_PARTITION_NAME || ' WITH TABLE ' || I_TABLE_NAME || ' WITHOUT VALIDATION';      
   END;
   
+  
   -----------------------------------------------------------------------------------------------------------------
-  -- Drop a partition.
+  -- Drop a partition from a table.
   -----------------------------------------------------------------------------------------------------------------
   PROCEDURE DROP_PARTITION(I_TABLE_NAME in VARCHAR2, I_PARTITION_NAME in VARCHAR2) AS
   BEGIN
@@ -649,8 +690,9 @@ create or replace PACKAGE BODY ILM_CORE AS
     EXECUTE IMMEDIATE'ALTER TABLE ' || I_TABLE_NAME || ' DROP PARTITION '|| I_PARTITION_NAME || ' UPDATE INDEXES';
   END;
 
+
   -----------------------------------------------------------------------------------------------------------------
-  -- Create a copy of temporary table in a specific tablespace
+  -- Create a copy of table in a specific tablespace.
   -----------------------------------------------------------------------------------------------------------------
   PROCEDURE COPY_TABLE(I_TABLE_NAME in VARCHAR2, I_TO_TBS IN VARCHAR2, NEW_TABLE_NAME IN VARCHAR2) AS
     CREATE_STATEMENT VARCHAR2(8000);
