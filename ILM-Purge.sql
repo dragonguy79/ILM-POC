@@ -1,0 +1,19 @@
+-- drop table
+DROP table ILMLOG purge;
+DROP table ILMTASK purge;
+DROP table ILMJOB purge;
+DROP table ILMMANAGEDTABLE purge;
+DROP table ILMCONFIG purge;
+
+-- drop sequence
+DROP SEQUENCE ILMJOB_SEQUENCE;
+DROP SEQUENCE ILMTASK_SEQUENCE;
+DROP SEQUENCE ILMLOG_SEQUENCE;
+DROP SEQUENCE ILMMANAGEDTABLE_SEQUENCE;
+DROP SEQUENCE ILMCONFIG_SEQUENCE;
+
+-- drop package
+drop package body "ILM_CORE";
+drop package "ILM_CORE";
+drop package body "ILM_COMMON";
+drop package "ILM_COMMON";

@@ -30,8 +30,8 @@ BEGIN
 
   
   -- test lob indexes are in HOT tablespace, because lob are not moved
-    -- assert that all lob index (3 column x 4 partition x 16 sub partition) are in ILM_HOT_TBS tablespace for PAYMENTINTERCHANGECOLD table
-  ILM_TEST.TEST_SQL_COUNT(192, 'SELECT COUNT(*) from USER_IND_SUBPARTITIONS ind inner join USER_LOBS l on ind.index_name = l.INDEX_NAME where l.table_name= ''PAYMENTINTERCHANGE'' and l.TABLESPACE_NAME=''ILM_HOT_TBS''  and ind.TABLESPACE_NAME=''ILM_HOT_TBS''');
+    -- assert that all lob index (3 column x 4 partition x 16 sub partition) are in ILM_HOT_TBS tablespace for TPAYMENTINTERCHANGECOLD table
+  ILM_TEST.TEST_SQL_COUNT(192, 'SELECT COUNT(*) from USER_IND_SUBPARTITIONS ind inner join USER_LOBS l on ind.index_name = l.INDEX_NAME where l.table_name= ''TPAYMENTINTERCHANGE'' and l.TABLESPACE_NAME=''ILM_HOT_TBS''  and ind.TABLESPACE_NAME=''ILM_HOT_TBS''');
 
 
 -----------------------------------------------------------------------------------------------------------------
@@ -49,7 +49,7 @@ BEGIN
   
   -- test that moved subpartitioned index are in WARM tablespace
     -- assert 16 subpartition index (1 partition x 16 subpartition) with USABLE status
-  ILM_TEST.TEST_SQL_COUNT(16, 'SELECT COUNT(*) from USER_IND_SUBPARTITIONS spi inner join USER_INDEXES ti on spi.index_name = ti.index_name where ti.table_name=''PAYMENTINTERCHANGE'' and spi.partition_name = ''P2015_11'' and spi.status=''USABLE'' and spi.tablespace_name=''ILM_WARM_TBS''');
+  ILM_TEST.TEST_SQL_COUNT(16, 'SELECT COUNT(*) from USER_IND_SUBPARTITIONS spi inner join USER_INDEXES ti on spi.index_name = ti.index_name where ti.table_name=''TPAYMENTINTERCHANGE'' and spi.partition_name = ''P2015_11'' and spi.status=''USABLE'' and spi.tablespace_name=''ILM_WARM_TBS''');
   
 
 END;
