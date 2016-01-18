@@ -12,14 +12,3 @@ BEGIN
 END;
 /
 
-
------------------------------------------------------------------------------------------------------------------
--- Delete test records from ILM tables
------------------------------------------------------------------------------------------------------------------
-DELETE FROM ILMJOB WHERE FROMTABLESPACE LIKE 'ILM_%_TBS';
-
-DELETE FROM ILMCONFIG WHERE ID < 0;
-DELETE FROM ILMMANAGEDTABLE WHERE ID < 0;
-
-purge recyclebin;
-COMMIT;

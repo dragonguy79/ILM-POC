@@ -29,9 +29,3 @@ END;
 /
 -- unit test COLD2DORMANT job
 @@TestCOLD2DORMANT.sql
-
-
------------------------------------
--- Cleanup test
------------------------------------
-@@../AfterTest.sql;
