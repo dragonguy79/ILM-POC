@@ -162,6 +162,7 @@ create or replace PACKAGE BODY ILM_COMMON AS
       WHEN NO_DATA_FOUND THEN RETURN '';
   END;
   
+  
   -----------------------------------------------------------------------------------------------------------------
   -- Return online clause based on config parameter.
   -----------------------------------------------------------------------------------------------------------------
@@ -202,4 +203,20 @@ create or replace PACKAGE BODY ILM_COMMON AS
     
     RETURN TBS_NAME;
   END;
+  
+  
+  -----------------------------------------------------------------------------------------------------------------
+  -- Return online clause based on config parameter.
+  -----------------------------------------------------------------------------------------------------------------
+  FUNCTION GET_JOB_TIMESTAMP RETURN TIMESTAMP AS
+    USER_TIMESTAMP TIMESTAMP;
+  BEGIN
+    EXECUTE IMMEDIATE 'SELECT TO_TIMESTAMP(VALUE,''DD-MON-RR HH.MI.SSXFF AM'')  FROM ILMCONFIG WHERE PARAM = :1' INTO USER_TIMESTAMP USING 'OVERWRITE_JOB_TIMESTAMP';
+    RETURN USER_TIMESTAMP;
+    
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN RETURN SYSTIMESTAMP;
+  END;
+  
+  
 END ILM_COMMON;
