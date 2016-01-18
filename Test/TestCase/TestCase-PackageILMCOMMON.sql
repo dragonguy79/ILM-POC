@@ -1,7 +1,7 @@
 -----------------------------------
 -- Setup test
 -----------------------------------
-@../BeforeTest.sql;
+@@../BeforeTest.sql;
 
 
 -----------------------------------
@@ -13,7 +13,7 @@ BEGIN
 --rollback; 
 END;
 /
-@TestHOT2COLD.sql;
+@@TestHOT2COLD.sql;
 
 -- test ILM_COMMON.TABLESPACE_EXIST
 DECLARE
@@ -71,4 +71,4 @@ END;
 -----------------------------------
 -- Cleanup test
 -----------------------------------
-@../AfterTest.sql;
+@@../AfterTest.sql;

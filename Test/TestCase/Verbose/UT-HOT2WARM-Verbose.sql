@@ -19,24 +19,24 @@ select TABLE_NAME, partition_name, tablespace_name  from USER_TAB_SUBPARTITIONS 
 -----------------------------------------------------------------------------------------------------------------
 -- test that partitioned lob are in COLD tablespace
   -- assert: 3 partitioned lob (3 columns of LOB) in tbs ILM_WARM_TBS
-select  TABLE_NAME, column_name, partition_name, LOB_PARTITION_NAME, tablespace_name from USER_LOB_PARTITIONS where partition_name = 'P2015_11';
+select  TABLE_NAME, column_name, partition_name, LOB_PARTITION_NAME, tablespace_name from USER_LOB_PARTITIONS where TABLE_NAME='TPAYMENTINTERCHANGE' AND partition_name = 'P2015_11';
 
 -- test that subpartitioned lob are in HOT tablespace, because lob are not moved
   -- assert 48 subpartitioned lob (3 columns of LOB x 16 subpartition) in tbs ILM_HOT_TBS
 select subpart.TABLE_NAME, subpart.column_name, subpart.subpartition_name,subpart.LOB_PARTITION_NAME, subpart.tablespace_name  
-from USER_LOB_SUBPARTITIONS subpart, USER_LOB_PARTITIONS part where subpart.LOB_PARTITION_NAME = part.LOB_PARTITION_NAME
+from USER_LOB_SUBPARTITIONS subpart, USER_LOB_PARTITIONS part where part.TABLE_NAME='TPAYMENTINTERCHANGE' and subpart.LOB_PARTITION_NAME = part.LOB_PARTITION_NAME
 and part.partition_name = 'P2015_11';
 
 -- test lob indexes are in HOT tablespace, because lob are not moved
   -- assert that all lob index are in ILM_HOT_TBS tablespace for PAYMENTINTERCHANGECOLD table
 select ind.index_name, l.table_name, l.column_name, ind.TABLESPACE_NAME as index_tbs, l.TABLESPACE_NAME as lob_tbs 
 from USER_IND_SUBPARTITIONS ind inner join USER_LOBS l on ind.index_name = l.INDEX_NAME
-where l.table_name= 'PAYMENTINTERCHANGE' ;
+where l.table_name= 'TPAYMENTINTERCHANGE' ;
 
   -- assert that all supartitioned lob index are in HOT tablespace for PAYMENTINTERCHANGE table
 select ind.index_name, l.table_name, l.column_name, ind.TABLESPACE_NAME as index_tbs, l.TABLESPACE_NAME as lob_tbs 
 from USER_IND_SUBPARTITIONS ind inner join USER_LOBS l on ind.index_name = l.INDEX_NAME
-where l.table_name= 'PAYMENTINTERCHANGE' ;
+where l.table_name= 'TPAYMENTINTERCHANGE' ;
 
 
 -----------------------------------------------------------------------------------------------------------------

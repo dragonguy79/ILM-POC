@@ -1,7 +1,7 @@
 -----------------------------------
 -- Setup test
 -----------------------------------
-@../BeforeTest.sql;
+@@../BeforeTest.sql;
 
 
 -----------------------------------
@@ -13,7 +13,7 @@ BEGIN
 --rollback; 
 END;
 /
-@TestHOT2COLD.sql;
+@@TestHOT2COLD.sql;
 
 -- run COLD2DORMANT job
 BEGIN
@@ -21,10 +21,10 @@ BEGIN
 --rollback; 
 END;
 /
-@TestCOLD2DORMANT.sql
+@@TestCOLD2DORMANT.sql
 
 
 -----------------------------------
 -- Cleanup test
 -----------------------------------
-@../AfterTest.sql;
+@@../AfterTest.sql;

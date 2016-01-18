@@ -7,12 +7,12 @@
 -----------------------------------------------------------------------------------------------------------------
 -- test that the moved partition are now in COLD tablespace
   -- assert: 1 partition in ILM_COLD_TBS
-select TABLE_NAME, partition_name, tablespace_name  from USER_TAB_PARTITIONS where table_name='PAYMENTINTERCHANGECOLD' and partition_name = 'P2015_11' and tablespace_name='ILM_COLD_TBS';
+select TABLE_NAME, partition_name, tablespace_name  from USER_TAB_PARTITIONS where table_name='TPAYMENTINTERCHANGECOLD' and partition_name = 'P2015_11' and tablespace_name='ILM_COLD_TBS';
 
 
 -- test that the moved subpartition are now in COLD tablespace
   -- assert: 16 subpartitions in tbs ILM_COLD_TBS
-select TABLE_NAME, partition_name, tablespace_name  from USER_TAB_SUBPARTITIONS where table_name='PAYMENTINTERCHANGECOLD' and partition_name = 'P2015_11';
+select TABLE_NAME, partition_name, tablespace_name  from USER_TAB_SUBPARTITIONS where table_name='TPAYMENTINTERCHANGECOLD' and partition_name = 'P2015_11';
 
 -----------------------------------------------------------------------------------------------------------------
 -- Lob
@@ -31,12 +31,12 @@ and part.partition_name = 'P2015_11';
   -- assert that all supartitioned lob index of PAYMENTINTERCHANGECOLD table are in COLD tablespace 
 select ind.index_name, l.table_name, l.column_name, ind.TABLESPACE_NAME as index_tbs, l.TABLESPACE_NAME as lob_tbs
 from USER_IND_SUBPARTITIONS ind inner join USER_LOBS l on ind.index_name = l.INDEX_NAME
-where l.table_name= 'PAYMENTINTERCHANGECOLD' ;
+where l.table_name= 'TPAYMENTINTERCHANGECOLD' ;
 
   -- assert that all supartitioned lob index of PAYMENTINTERCHANGE table are in HOT tablespace 
 select ind.index_name, l.table_name, l.column_name, ind.TABLESPACE_NAME as index_tbs, l.TABLESPACE_NAME  as lob_tbs
 from USER_IND_SUBPARTITIONS ind inner join USER_LOBS l on ind.index_name = l.INDEX_NAME
-where l.table_name= 'PAYMENTINTERCHANGE' ;
+where l.table_name= 'TPAYMENTINTERCHANGE' ;
 
 
 -----------------------------------------------------------------------------------------------------------------

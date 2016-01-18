@@ -31,12 +31,12 @@ and part.partition_name = 'P2015_11';
   -- assert that all supartitioned lob index of PAYMENTINTERCHANGECOLD table are in COLD tablespace 
 select ind.index_name, l.table_name, l.column_name, ind.TABLESPACE_NAME, l.TABLESPACE_NAME 
 from USER_IND_SUBPARTITIONS ind inner join USER_LOBS l on ind.index_name = l.INDEX_NAME
-where l.table_name= 'PAYMENTINTERCHANGECOLD' ;
+where l.table_name= 'TPAYMENTINTERCHANGECOLD' ;
 
   -- assert that all supartitioned lob index of PAYMENTINTERCHANGE table are in HOT tablespace 
 select ind.index_name, l.table_name, l.column_name, ind.TABLESPACE_NAME, l.TABLESPACE_NAME 
 from USER_IND_SUBPARTITIONS ind inner join USER_LOBS l on ind.index_name = l.INDEX_NAME
-where l.table_name= 'PAYMENTINTERCHANGE' ;
+where l.table_name= 'TPAYMENTINTERCHANGE' ;
 
 
 -----------------------------------------------------------------------------------------------------------------
