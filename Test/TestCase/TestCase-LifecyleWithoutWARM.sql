@@ -10,7 +10,6 @@
 -- run HOT2COLD job
 BEGIN
   ILM_CORE.CREATE_JOB('HOT2COLD');
---rollback; 
 END;
 /
 @@TestHOT2COLD.sql;

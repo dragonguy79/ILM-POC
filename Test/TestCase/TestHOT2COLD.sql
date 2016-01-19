@@ -88,5 +88,21 @@ BEGIN
     -- because TPAYMENTTRANSACTION does not have any local index
   ILM_TEST.TEST_SQL_COUNT(0, 'SELECT COUNT(*) from USER_IND_SUBPARTITIONS spi inner join USER_INDEXES ti on spi.index_name=ti.index_name where ti.table_name=''TPAYMENTTRANSACTION'' and spi.partition_name=''P2015_11''');
   
+
+-----------------------------------------------------------------------------------------------------------------
+-- Compression
+-----------------------------------------------------------------------------------------------------------------
+  -- ******************** TPAYMENTINTERCHANGECOLD ********************-- 
+  -- test that compression OLTP is applied to WARM for P2015_10 and P2015_11
+    -- expect 16 subparittion per partition
+  ILM_TEST.TEST_SQL_COUNT(16, 'SELECT COUNT(*) FROM USER_TAB_SUBPARTITIONS WHERE TABLE_NAME=''TPAYMENTINTERCHANGECOLD'' AND PARTITION_NAME=''P2015_10'' AND TABLESPACE_NAME=''ILM_COLD_TBS'' AND COMPRESSION=''ENABLED'' AND COMPRESS_FOR=''ADVANCED''');
+  ILM_TEST.TEST_SQL_COUNT(16, 'SELECT COUNT(*) FROM USER_TAB_SUBPARTITIONS WHERE TABLE_NAME=''TPAYMENTINTERCHANGECOLD'' AND PARTITION_NAME=''P2015_11'' AND TABLESPACE_NAME=''ILM_COLD_TBS'' AND COMPRESSION=''ENABLED'' AND COMPRESS_FOR=''ADVANCED''');
+ 
+  
+  -- ******************** TPAYMENTTRANSACTIONCOLD ********************-- 
+  -- test that compression OLTP is applied to WARM for P2015_10 and P2015_11
+  ILM_TEST.TEST_SQL_COUNT(16, 'SELECT COUNT(*) FROM USER_TAB_SUBPARTITIONS WHERE TABLE_NAME=''TPAYMENTTRANSACTIONCOLD'' AND PARTITION_NAME=''P2015_10'' AND TABLESPACE_NAME=''ILM_COLD_TBS'' AND COMPRESSION=''ENABLED'' AND COMPRESS_FOR=''ADVANCED''');
+  ILM_TEST.TEST_SQL_COUNT(16, 'SELECT COUNT(*) FROM USER_TAB_SUBPARTITIONS WHERE TABLE_NAME=''TPAYMENTTRANSACTIONCOLD'' AND PARTITION_NAME=''P2015_11'' AND TABLESPACE_NAME=''ILM_COLD_TBS'' AND COMPRESSION=''ENABLED'' AND COMPRESS_FOR=''ADVANCED''');
+ 
 END;
 /
