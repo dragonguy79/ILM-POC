@@ -9,7 +9,7 @@
 -----------------------------------
 -- run HOT2COLD job
 BEGIN
-  ILM_CORE.RUN_JOB(I_JOB => 'HOT2COLD');
+  ILM_CORE.CREATE_JOB('HOT2COLD');
 --rollback; 
 END;
 /
@@ -17,7 +17,7 @@ END;
 
 -- run COLD2DORMANT job
 BEGIN
-  ILM_CORE.RUN_JOB(I_JOB => 'COLD2DORMANT');
+  ILM_CORE.CREATE_JOB('COLD2DORMANT');
 --rollback; 
 END;
 /

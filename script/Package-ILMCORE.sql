@@ -62,7 +62,8 @@ create or replace PACKAGE ILM_CORE AS
   -- Procedures 
   -----------------------------------------------------------------------------------------------------------------
   -- job
-  PROCEDURE RUN_JOB(I_JOB VARCHAR2, I_RESUME_JOB_ID in NUMBER DEFAULT NULL);
+  PROCEDURE CREATE_JOB(I_JOB_TYPE in VARCHAR2);
+  PROCEDURE RESUME_JOB(I_JOB_ID in NUMBER);
 
   -- data
   PROCEDURE MOVE_SUBPARTITION(I_TABLE_NAME in VARCHAR2, I_PARTITION_NAME in VARCHAR2, I_FROM_TBS in VARCHAR2, I_TO_TBS in VARCHAR2, COMPRESSION_CLAUSE in VARCHAR2 DEFAULT '', ONLINE_CLAUSE in VARCHAR2 DEFAULT '');

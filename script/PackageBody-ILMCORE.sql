@@ -35,6 +35,7 @@ create or replace PACKAGE BODY ILM_CORE AS
     raise_application_error(-20010, ERROR_MESSAGE);
   END;
  
+ 
   -----------------------------------------------------------------------------------------------------------------
   -- Get table sequence from step ID. Table sequence is consulted from ILMMANAGED.MOVESEQUENCE.
   -----------------------------------------------------------------------------------------------------------------
@@ -742,85 +743,73 @@ create or replace PACKAGE BODY ILM_CORE AS
         UPDATE_ILMTABLE_STATUS(managed_table.TABLENAME, FROM_STAGE, ILMTABLESTATUS_VALID);
       END LOOP;
   END;
-  
 
+  
   -----------------------------------------------------------------------------------------------------------------
   -- Run job
     -- I_JOB specifiy type of move. Specify either: HOT2WARM, WARM2COLD, COLD2DORMANT or HOT2COLD
     -- I_RESUME_JOB_ID value is provided to resume an existing job.
-    -- Note that a new job cannot be created if previous job of same type did not complete successfully.
   -----------------------------------------------------------------------------------------------------------------
-  PROCEDURE RUN_JOB(I_JOB VARCHAR2, I_RESUME_JOB_ID in NUMBER DEFAULT NULL) AS
-    I_UNFINISHED_JOB_ID NUMBER;
+  PROCEDURE RUN_JOB(I_JOB_TYPE VARCHAR2, I_RESUME_JOB_ID in NUMBER DEFAULT NULL) AS
+    
   BEGIN
     -- initialize stages
-    IF I_JOB = HOT2WARM_JOB THEN
+    IF I_JOB_TYPE = HOT2WARM_JOB THEN
       FROM_STAGE:=HOT_STAGE;
       TO_STAGE:=WARM_STAGE;
-    ELSIF I_JOB = WARM2COLD_JOB THEN
+    ELSIF I_JOB_TYPE = WARM2COLD_JOB THEN
       FROM_STAGE:=WARM_STAGE;
       TO_STAGE:=COLD_STAGE;
-    ELSIF I_JOB = COLD2DORMANT_JOB THEN
+    ELSIF I_JOB_TYPE = COLD2DORMANT_JOB THEN
       FROM_STAGE:=COLD_STAGE;
       TO_STAGE:=DORMANT_STAGE;
-    ELSIF I_JOB = HOT2COLD_JOB THEN
+    ELSIF I_JOB_TYPE = HOT2COLD_JOB THEN
       FROM_STAGE:=HOT_STAGE;
       TO_STAGE:=COLD_STAGE;
     ELSE
-      THROW_EXCEPTION('Fail to start job: Job type [' || I_JOB || '] is not valid!');
+      THROW_EXCEPTION('Fail to start job: Job type [' || I_JOB_TYPE || '] is not valid!');
     END IF;
     
     IF I_RESUME_JOB_ID IS NOT NULL THEN  -- resume job
-      IF ILM_COMMON.CAN_RESUME_JOB(I_RESUME_JOB_ID) = 1 THEN
-        -- get highest step id from the job
-        EXECUTE IMMEDIATE 'SELECT ILMTASK.STEPID, ILMJOB.FROMTABLESPACE, ILMJOB.TOTABLESPACE, ILMJOB.STARTTIME FROM ILMJOB
-                            INNER JOIN ILMTASK on ILMTASK.JOBID = ILMJOB.ID
-                            WHERE ILMTASK.ID = (SELECT MAX(ID) FROM ILMTASK WHERE JOBID = :1)'  
-            INTO RESUME_STEP_ID, FROM_TBS, TO_TBS, JOB_START_TIMESTAMP USING I_RESUME_JOB_ID;
-            
-        IF RESUME_STEP_ID IS NOT NULL THEN   -- step ID has move sequence and operation id
-            RESUME_TABLE_SEQUENCE:=GET_RESUME_TABLE_SEQUENCE(RESUME_STEP_ID);
-            RESUME_PARTITION_SEQUENCE:=GET_RESUME_PARTITION_SEQUENCE(RESUME_STEP_ID, FROM_STAGE);
-            RESUME_STEP_ID := INCREMENT_COMPLETED_STEP(I_RESUME_JOB_ID, RESUME_STEP_ID);
-        END IF;
+      -- get highest step id from the job
+      EXECUTE IMMEDIATE 'SELECT ILMTASK.STEPID, ILMJOB.FROMTABLESPACE, ILMJOB.TOTABLESPACE, ILMJOB.STARTTIME FROM ILMJOB
+                          INNER JOIN ILMTASK on ILMTASK.JOBID = ILMJOB.ID
+                          WHERE ILMTASK.ID = (SELECT MAX(ID) FROM ILMTASK WHERE JOBID = :1)'  
+          INTO RESUME_STEP_ID, FROM_TBS, TO_TBS, JOB_START_TIMESTAMP USING I_RESUME_JOB_ID;
+          
+      IF RESUME_STEP_ID IS NOT NULL THEN   -- step ID has move sequence and operation id
+          RESUME_TABLE_SEQUENCE:=GET_RESUME_TABLE_SEQUENCE(RESUME_STEP_ID);
+          RESUME_PARTITION_SEQUENCE:=GET_RESUME_PARTITION_SEQUENCE(RESUME_STEP_ID, FROM_STAGE);
+          RESUME_STEP_ID := INCREMENT_COMPLETED_STEP(I_RESUME_JOB_ID, RESUME_STEP_ID);
+      END IF;
 
-        -- change job status to STARTED
-        CURRENT_JOB_ID:=I_RESUME_JOB_ID;
-        EXECUTE IMMEDIATE 'UPDATE ILMJOB SET STATUS = :1 WHERE ID = :2' USING ILM_CORE.JOBSTATUS_STARTED, CURRENT_JOB_ID;
-        LOG_MESSAGE('Resuming existing job [ID=' || CURRENT_JOB_ID || '] to migrate partitions from '|| FROM_STAGE ||' to ' || TO_STAGE);
-      ELSE
-        THROW_EXCEPTION('Job[ID=' || I_RESUME_JOB_ID || '] to resume cannot be found.');
-      END IF;
-  
-    ELSE -- new JOB
-      I_UNFINISHED_JOB_ID := ILM_COMMON.GET_PREVIOUS_UNFINISHED_JOB(I_JOB);
+      -- change job status to STARTED
+      CURRENT_JOB_ID:=I_RESUME_JOB_ID;
+      EXECUTE IMMEDIATE 'UPDATE ILMJOB SET STATUS = :1 WHERE ID = :2' USING ILM_CORE.JOBSTATUS_STARTED, CURRENT_JOB_ID;
+      LOG_MESSAGE('Resuming existing job [ID=' || CURRENT_JOB_ID || '] to migrate partitions from '|| FROM_STAGE ||' to ' || TO_STAGE);
+    ELSE 
+      -- new JOB
+      JOB_START_TIMESTAMP:=ILM_COMMON.GET_JOB_TIMESTAMP;
       
-      IF I_UNFINISHED_JOB_ID = 0 THEN
-        JOB_START_TIMESTAMP:=ILM_COMMON.GET_JOB_TIMESTAMP;
-        
-        -- get source and target tablespace
-        FROM_TBS:=ILM_COMMON.GET_TABLESPACE_NAME(FROM_STAGE);
-        TO_TBS:=ILM_COMMON.GET_TABLESPACE_NAME(TO_STAGE, JOB_START_TIMESTAMP);
-      
-        -- create ILMJOB
-        SELECT ILMJOB_SEQUENCE.nextval INTO CURRENT_JOB_ID FROM DUAL;
-        INSERT INTO ILMJOB(ID, JOBNAME, STATUS, FROMTABLESPACE, TOTABLESPACE, STARTTIME)
-        VALUES (CURRENT_JOB_ID, I_JOB||'_' || TO_CHAR(SYSTIMESTAMP, 'yyyymmdd_HH24miss') , JOBSTATUS_STARTED, FROM_TBS, TO_TBS, JOB_START_TIMESTAMP);
-        LOG_MESSAGE('Created new ILM JOB[ID=' || CURRENT_JOB_ID || '] to migrate partitions from '|| FROM_STAGE ||' to ' || TO_STAGE);
-      ELSE
-        -- found previous non-completed job
-        THROW_EXCEPTION('New job of type '|| I_JOB || ' cannot be created because previous job of same type did not end successfully. Please resume previous job with ID ' || I_UNFINISHED_JOB_ID);
-      END IF;
+      -- get source and target tablespace
+      FROM_TBS:=ILM_COMMON.GET_TABLESPACE_NAME(FROM_STAGE);
+      TO_TBS:=ILM_COMMON.GET_TABLESPACE_NAME(TO_STAGE, JOB_START_TIMESTAMP);
+    
+      -- create ILMJOB
+      SELECT ILMJOB_SEQUENCE.nextval INTO CURRENT_JOB_ID FROM DUAL;
+      INSERT INTO ILMJOB(ID, JOBNAME, STATUS, FROMTABLESPACE, TOTABLESPACE, STARTTIME)
+      VALUES (CURRENT_JOB_ID, I_JOB_TYPE||'_' || TO_CHAR(SYSTIMESTAMP, 'yyyymmdd_HH24miss') , JOBSTATUS_STARTED, FROM_TBS, TO_TBS, JOB_START_TIMESTAMP);
+      LOG_MESSAGE('Created new ILM JOB[ID=' || CURRENT_JOB_ID || '] to migrate partitions from '|| FROM_STAGE ||' to ' || TO_STAGE);
     END IF;
   
     -- run operations for designated move
-    IF I_JOB = HOT2WARM_JOB THEN
+    IF I_JOB_TYPE = HOT2WARM_JOB THEN
       RUN_HOT2WARM_JOB;
-    ELSIF I_JOB = WARM2COLD_JOB THEN
+    ELSIF I_JOB_TYPE = WARM2COLD_JOB THEN
       RUN_WARM2COLD_JOB;
-    ELSIF I_JOB = COLD2DORMANT_JOB THEN
+    ELSIF I_JOB_TYPE = COLD2DORMANT_JOB THEN
       RUN_COLD2DORMANT_JOB;
-    ELSIF I_JOB = HOT2COLD_JOB THEN
+    ELSIF I_JOB_TYPE = HOT2COLD_JOB THEN
       RUN_HOT2COLD_JOB;
     END IF;
 
@@ -837,6 +826,41 @@ create or replace PACKAGE BODY ILM_CORE AS
       raise;
   END;
 
-
+  
+  -----------------------------------------------------------------------------------------------------------------
+  -- To start a new job a specific move type.
+    -- Note that a new job cannot be created if previous job of same type did not complete successfully.
+  -----------------------------------------------------------------------------------------------------------------
+  PROCEDURE CREATE_JOB(I_JOB_TYPE in VARCHAR2) AS
+    UNFINISHED_JOB_ID NUMBER;
+  BEGIN
+    UNFINISHED_JOB_ID := ILM_COMMON.GET_PREVIOUS_UNFINISHED_JOB(I_JOB_TYPE);
+    
+    IF UNFINISHED_JOB_ID = 0 THEN
+      RUN_JOB(I_JOB_TYPE);
+    ELSE
+      -- found previous non-completed job
+      THROW_EXCEPTION('New job '|| I_JOB_TYPE || ' cannot be created because previous job of same type did not end successfully. Please resume previous job with ID ' || UNFINISHED_JOB_ID);
+    END IF;
+  END;
+  
+  
+  -----------------------------------------------------------------------------------------------------------------
+  -- To resume an existing job that did not end successfully previously.
+    -- Note that if there is a more recent job of same type that exists, then the job cannot be resumed.
+  -----------------------------------------------------------------------------------------------------------------
+  PROCEDURE RESUME_JOB(I_JOB_ID in NUMBER) AS
+    V_JOB_TYPE VARCHAR2(15);
+  BEGIN
+    IF ILM_COMMON.CAN_RESUME_JOB(I_JOB_ID) = 1 THEN
+      -- get the job type
+      EXECUTE IMMEDIATE 'SELECT REGEXP_SUBSTR(JOBNAME, ''[^_]+'', 1, 1)  FROM ILMJOB WHERE ID=:1' INTO V_JOB_TYPE USING I_JOB_ID; 
+      RUN_JOB(V_JOB_TYPE, I_JOB_ID);
+    ELSE
+      THROW_EXCEPTION('Job[ID=' || I_JOB_ID || '] cannot be resumed, please check the job status.');
+    END IF;
+  
+  END;
+  
   
 END ILM_CORE;

@@ -9,14 +9,14 @@
 -----------------------------------
 -- run HOT2WARM job
 BEGIN
-  ILM_CORE.RUN_JOB(I_JOB => 'HOT2WARM');
+  ILM_CORE.CREATE_JOB('HOT2WARM');
 END;
 /
 @@TestHOT2WARM.sql;
 
 -- run WARM2COLD job
 BEGIN
-  ILM_CORE.RUN_JOB(I_JOB => 'WARM2COLD');
+  ILM_CORE.CREATE_JOB('WARM2COLD');
 END;
 /
 -- unit test WARM2COLD job
@@ -24,7 +24,7 @@ END;
 
 -- run COLD2DORMANT job
 BEGIN
-  ILM_CORE.RUN_JOB(I_JOB => 'COLD2DORMANT');
+  ILM_CORE.CREATE_JOB('COLD2DORMANT');
 END;
 /
 -- unit test COLD2DORMANT job
