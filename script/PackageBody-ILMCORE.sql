@@ -455,18 +455,18 @@ create or replace PACKAGE BODY ILM_CORE AS
               'ILM_CORE.MOVE_REBUILD_SUBPART_INDEX(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||FROM_TBS|| ''', '''||TO_TBS||''')', 
               CONSTRUCT_STEP_ID(L1_STEP_ID, managed_table.TABLENAME, L2_STEP_ID, pRow.PARTITION_NAME, L3_STEP_ID));
             
-            -- update tablespace attribute of partition
-            L3_STEP_ID:=L3_STEP_ID+1;
-            UPDATE_ILMTABLE_STATUS(managed_table.TABLENAME, FROM_STAGE, ILMTABLESTATUS_DATASTALE);
-            RUN_TASK(
-              'ILM_CORE.MODIFY_PARTITION_TBS(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||TO_TBS|| ''', '''||ILM_COMMON.GET_COMPRESSION_CLAUSE(managed_table.TABLENAME,TO_STAGE)||''')', 
-              CONSTRUCT_STEP_ID(L1_STEP_ID, managed_table.TABLENAME, L2_STEP_ID, pRow.PARTITION_NAME, L3_STEP_ID));
-            
             -- update tablespace attribute of partitioned index
             UPDATE_ILMTABLE_STATUS(managed_table.TABLENAME, FROM_STAGE, ILMTABLESTATUS_INDEXSTALE);
             L3_STEP_ID:=L3_STEP_ID+1;
             RUN_TASK(
               'ILM_CORE.MODIFY_PARTITION_INDEX_TBS(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||TO_TBS||''')', 
+              CONSTRUCT_STEP_ID(L1_STEP_ID, managed_table.TABLENAME, L2_STEP_ID, pRow.PARTITION_NAME, L3_STEP_ID));
+
+            -- update tablespace attribute of partition
+            L3_STEP_ID:=L3_STEP_ID+1;
+            UPDATE_ILMTABLE_STATUS(managed_table.TABLENAME, FROM_STAGE, ILMTABLESTATUS_DATASTALE);
+            RUN_TASK(
+              'ILM_CORE.MODIFY_PARTITION_TBS(''' || managed_table.TABLENAME || ''', '''||pRow.PARTITION_NAME|| ''', '''||TO_TBS|| ''', '''||ILM_COMMON.GET_COMPRESSION_CLAUSE(managed_table.TABLENAME,TO_STAGE)||''')', 
               CONSTRUCT_STEP_ID(L1_STEP_ID, managed_table.TABLENAME, L2_STEP_ID, pRow.PARTITION_NAME, L3_STEP_ID));
           END IF;
         END LOOP;
