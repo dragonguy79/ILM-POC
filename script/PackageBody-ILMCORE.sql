@@ -35,198 +35,6 @@ create or replace PACKAGE BODY ILM_CORE AS
     raise_application_error(-20010, ERROR_MESSAGE);
   END;
  
- 
-  -----------------------------------------------------------------------------------------------------------------
-  -- Get table sequence from step ID. Table sequence is consulted from ILMMANAGED.MOVESEQUENCE.
-  -----------------------------------------------------------------------------------------------------------------
-  FUNCTION GET_RESUME_TABLE_SEQUENCE(I_STEP_ID in VARCHAR2) RETURN NUMBER AS
-    MOVE_SEQUENCE NUMBER:=0;
-    I_TABLE_NAME VARCHAR2(30);
-  BEGIN
-    I_TABLE_NAME:=REGEXP_SUBSTR(I_STEP_ID, '[^#]+', 1, 2);
-    IF I_TABLE_NAME IS NOT NULL THEN
-       EXECUTE IMMEDIATE 'SELECT MOVESEQUENCE FROM ILMMANAGEDTABLE WHERE TABLENAME=:1' INTO MOVE_SEQUENCE USING I_TABLE_NAME;
-    END IF;
-    RETURN MOVE_SEQUENCE;
-  END;
-  
-  
-  -----------------------------------------------------------------------------------------------------------------
-  -- Get partition name from step ID.
-    -- Note that step ID contains only HOT table name, so it needs to find out the COLD table name in order to get the right partition sequence.
-    -- Partition sequence is consulted from USER_TAB_PARTITIONS.PARTITION_POSITION
-  -----------------------------------------------------------------------------------------------------------------
-  FUNCTION GET_RESUME_PARTITION_SEQUENCE(I_STEP_ID in VARCHAR2, I_FROM_STAGE in VARCHAR2) RETURN NUMBER AS
-    PARTITION_SEQUENCE NUMBER:=0;
-    I_TABLE_NAME VARCHAR2(30);
-    I_PARTITION_NAME VARCHAR2(30);
-  BEGIN
-    I_TABLE_NAME:=REGEXP_SUBSTR(I_STEP_ID, '[^#]+', 1, 2);
-    I_PARTITION_NAME:=REGEXP_SUBSTR(I_STEP_ID, '[^#]+', 1, 4);
-    
-    IF I_FROM_STAGE = COLD_STAGE THEN
-      EXECUTE IMMEDIATE 'SELECT COLDTABLENAME FROM ILMMANAGEDTABLE WHERE TABLENAME=:1' INTO I_TABLE_NAME USING I_TABLE_NAME;
-    END IF;
-    
-    IF I_TABLE_NAME IS NOT NULL AND I_PARTITION_NAME IS NOT NULL THEN
-       EXECUTE IMMEDIATE 'SELECT PARTITION_POSITION FROM USER_TAB_PARTITIONS WHERE TABLE_NAME=:1 AND PARTITION_NAME=:2' INTO PARTITION_SEQUENCE USING I_TABLE_NAME, I_PARTITION_NAME;
-    END IF;
-    RETURN PARTITION_SEQUENCE;
-  END;
-  
-  
-  -----------------------------------------------------------------------------------------------------------------
-  -- Construct a step id from subpart of information, which are:
-    -- Level 1 step id
-    -- Table name
-    -- Level 2 step id
-    -- Partition name
-    -- Level 3 step id
-  -----------------------------------------------------------------------------------------------------------------
-  FUNCTION CONSTRUCT_STEP_ID(L1_STEP_ID in NUMBER, I_TABLE_NAME in VARCHAR2 default null, L2_STEP_ID in NUMBER default null, I_PARTITION_NAME in VARCHAR default null, L3_STEP_ID in NUMBER default null) RETURN VARCHAR2 AS
-  BEGIN
-    return L1_STEP_ID || '#' || I_TABLE_NAME || '#' || L2_STEP_ID || '#' || I_PARTITION_NAME || '#' || L3_STEP_ID;
-  END;
-  
-  
-  -----------------------------------------------------------------------------------------------------------------
-  -- Break a step id into subpart of information, which are:
-    -- Level 1 step id
-    -- Table name
-    -- Level 2 step id
-    -- Partition name
-    -- Level 3 step id
-  -----------------------------------------------------------------------------------------------------------------
-  PROCEDURE DECODE_STEP_ID(I_STEP_ID in VARCHAR2, L1_STEP_ID out NUMBER, I_TABLE_NAME out VARCHAR2, L2_STEP_ID out NUMBER, I_PARTITION_NAME out VARCHAR, L3_STEP_ID out NUMBER) AS
-  BEGIN
-    L1_STEP_ID:=REGEXP_SUBSTR(I_STEP_ID, '[^#]+', 1, 1);
-    I_TABLE_NAME:=REGEXP_SUBSTR(I_STEP_ID, '[^#]+', 1, 2);
-    L2_STEP_ID:=REGEXP_SUBSTR(I_STEP_ID, '[^#]+', 1, 3);
-    I_PARTITION_NAME:=REGEXP_SUBSTR(I_STEP_ID, '[^#]+', 1, 4);
-    L3_STEP_ID:=REGEXP_SUBSTR(I_STEP_ID, '[^#]+', 1, 5);
-  END;
-  
-  
-  -----------------------------------------------------------------------------------------------------------------
-  -- A step id might indicate a step that has ended successfully. This method returns next step ID if current step is completed,
-  -- or it returns current step ID if current step is not yet completed.
-  -----------------------------------------------------------------------------------------------------------------
-  FUNCTION INCREMENT_COMPLETED_STEP(I_JOB_ID in NUMBER, I_STEP_ID in VARCHAR2) RETURN VARCHAR2 AS
-    L1_STEP_ID NUMBER;
-    TABLE_NAME VARCHAR2(30);
-    L2_STEP_ID NUMBER;
-    PARTITION_NAME VARCHAR2(30);
-    L3_STEP_ID NUMBER;
-    I_TASK_STATUS VARCHAR2(30);
-  BEGIN
-    EXECUTE IMMEDIATE 'SELECT DISTINCT FIRST_VALUE(STATUS)  OVER (ORDER BY ID DESC) FROM ILMTASK WHERE JOBID=:1 AND STEPID=:2' INTO I_TASK_STATUS USING I_JOB_ID, I_STEP_ID;
-   
-    -- if last step has status ended, then increase step id
-    IF I_TASK_STATUS=TASKSTATUS_ENDED THEN
-      DECODE_STEP_ID(I_STEP_ID, L1_STEP_ID, TABLE_NAME, L2_STEP_ID, PARTITION_NAME, L3_STEP_ID);
-      
-      IF L3_STEP_ID IS NOT NULL THEN 
-        L3_STEP_ID := L3_STEP_ID + 1;
-      ELSIF L2_STEP_ID IS NOT NULL THEN 
-        L2_STEP_ID := L2_STEP_ID + 1;
-      ELSIF  L1_STEP_ID IS NOT NULL THEN 
-        L1_STEP_ID := L1_STEP_ID + 1;
-      END IF;
-      
-      RETURN CONSTRUCT_STEP_ID(L1_STEP_ID, TABLE_NAME, L2_STEP_ID, PARTITION_NAME, L3_STEP_ID);
-    END IF;
-    
-    -- status was not ENDED, continue with existing step id
-    RETURN I_STEP_ID;
-  END;
-  
-  
-  -----------------------------------------------------------------------------------------------------------------
-  -- Permit a step to run if the step is not inferior to resumed step.
-    -- because table name and partition name will change, it permit steps if it detects either table or partition has changed.
-    -- it checks mainly on Level1, Level2 and Level3 step id with same table name and partition name.
-  -----------------------------------------------------------------------------------------------------------------
-  FUNCTION PERMIT_STEP_ID(CURRENT_STEP_ID in VARCHAR2, RESUME_STEP_ID in VARCHAR2) RETURN NUMBER AS
-    CURRENT_L1_STEP_ID NUMBER;
-    CURRENT_I_TABLE_NAME VARCHAR2(30);
-    CURRENT_L2_STEP_ID NUMBER;
-    CURRENT_I_PARTITION_NAME VARCHAR2(30);
-    CURRENT_L3_STEP_ID NUMBER;
-    LAST_L1_STEP_ID NUMBER;
-    LAST_I_TABLE_NAME VARCHAR2(30);
-    LAST_L2_STEP_ID NUMBER;
-    LAST_I_PARTITION_NAME VARCHAR2(30);
-    LAST_L3_STEP_ID NUMBER;
-  BEGIN
-    IF RESUME_STEP_ID IS NULL THEN RETURN 1; END IF;
-    
-    DECODE_STEP_ID(CURRENT_STEP_ID, CURRENT_L1_STEP_ID, CURRENT_I_TABLE_NAME, CURRENT_L2_STEP_ID, CURRENT_I_PARTITION_NAME, CURRENT_L3_STEP_ID);
-    DECODE_STEP_ID(RESUME_STEP_ID, LAST_L1_STEP_ID, LAST_I_TABLE_NAME, LAST_L2_STEP_ID, LAST_I_PARTITION_NAME, LAST_L3_STEP_ID);
-    
-    -- L1 check
-    IF LAST_L1_STEP_ID IS NOT NULL THEN
-      IF CURRENT_L1_STEP_ID < LAST_L1_STEP_ID 
-        THEN RETURN 0; -- inferior L1, forbid
-      END IF;
-    END IF;
-    
-    -- L2 check
-    IF LAST_I_TABLE_NAME IS NOT NULL THEN
-      IF CURRENT_I_TABLE_NAME != LAST_I_TABLE_NAME  -- table has change, new L2 cycle, allow
-        THEN RETURN 1;
-      ELSIF CURRENT_L2_STEP_ID < LAST_L2_STEP_ID 
-        THEN RETURN 0;
-      END IF;
-    END IF;
-    
-    -- L3 check
-    IF LAST_I_PARTITION_NAME IS NOT NULL THEN
-      IF CURRENT_I_PARTITION_NAME != LAST_I_PARTITION_NAME 
-        THEN RETURN 1;
-      ELSIF CURRENT_L3_STEP_ID < LAST_L3_STEP_ID 
-        THEN RETURN 0;
-      END IF;
-    END IF;
-    
-    RETURN 1;
-  END;
-  
-
-  -----------------------------------------------------------------------------------------------------------------
-  -- Proxy of all tasks
-    -- It logs message to ILMLOG
-    -- Exeception raised from task is caught and logged
-    -- Duration of task execution is logged.
-  -----------------------------------------------------------------------------------------------------------------
-  PROCEDURE RUN_TASK(OPERATION in VARCHAR2, I_CURRENT_STEP_ID in VARCHAR2) AS
-  BEGIN
-    -- verfiy step id
-    If PERMIT_STEP_ID (I_CURRENT_STEP_ID, RESUME_STEP_ID)=0 THEN
-      RETURN;
-    END IF;
-    CURRENT_STEP_ID:=I_CURRENT_STEP_ID;
-  
-    -- create a new record in ILMTASK
-    INSERT INTO ILMTASK(ID, JOBID, STEPID, STATUS, STARTTIME) 
-    VALUES (ILMTASK_SEQUENCE.nextval, CURRENT_JOB_ID, CURRENT_STEP_ID, TASKSTATUS_STARTED,  SYSTIMESTAMP)
-    RETURNING ID INTO CURRENT_TASK_ID;
-    
-    -- run operation
-    EXECUTE IMMEDIATE 'BEGIN ' || OPERATION || '; END;';
-    
-    -- update status and end time of current task upon successful completion
-    UPDATE ILMTASK SET STATUS=JOBSTATUS_ENDED, ENDTIME=SYSTIMESTAMP WHERE ID=CURRENT_TASK_ID;
-    
-    EXCEPTION
-    WHEN OTHERS THEN
-      -- log error message in table MIGRATION_STEP and MIGRATION_LOG, and raise error
-      LOG_MESSAGE('Exception is caught : ' || ' - ' || SQLERRM || ' - ' || dbms_utility.format_error_backtrace() || '. ');
-      UPDATE ILMTASK SET STATUS=TASKSTATUS_FAILED, ENDTIME=SYSTIMESTAMP WHERE ID=CURRENT_TASK_ID;
-      UPDATE ILMJOB SET STATUS=JOBSTATUS_FAILED, ENDTIME=SYSTIMESTAMP WHERE ID=CURRENT_JOB_ID;
-      COMMIT;
-      raise;
-  END;
-  
   
   ----------------------------------------------------------------------------------------------------------------
   --  Move all subpartitions of a partition from one tablespace to another tablespace
@@ -418,6 +226,198 @@ create or replace PACKAGE BODY ILM_CORE AS
 
     LOG_MESSAGE('Create new table ' || NEW_TABLE_NAME|| ' in tablespace ' || I_TO_TBS);
     EXECUTE IMMEDIATE CREATE_STATEMENT;
+  END;
+  
+  
+  -----------------------------------------------------------------------------------------------------------------
+  -- Get table sequence from step ID. Table sequence is consulted from ILMMANAGED.MOVESEQUENCE.
+  -----------------------------------------------------------------------------------------------------------------
+  FUNCTION GET_RESUME_TABLE_SEQUENCE(I_STEP_ID in VARCHAR2) RETURN NUMBER AS
+    MOVE_SEQUENCE NUMBER:=0;
+    I_TABLE_NAME VARCHAR2(30);
+  BEGIN
+    I_TABLE_NAME:=REGEXP_SUBSTR(I_STEP_ID, '[^#]+', 1, 2);
+    IF I_TABLE_NAME IS NOT NULL THEN
+       EXECUTE IMMEDIATE 'SELECT MOVESEQUENCE FROM ILMMANAGEDTABLE WHERE TABLENAME=:1' INTO MOVE_SEQUENCE USING I_TABLE_NAME;
+    END IF;
+    RETURN MOVE_SEQUENCE;
+  END;
+  
+  
+  -----------------------------------------------------------------------------------------------------------------
+  -- Get partition name from step ID.
+    -- Note that step ID contains only HOT table name, so it needs to find out the COLD table name in order to get the right partition sequence.
+    -- Partition sequence is consulted from USER_TAB_PARTITIONS.PARTITION_POSITION
+  -----------------------------------------------------------------------------------------------------------------
+  FUNCTION GET_RESUME_PARTITION_SEQUENCE(I_STEP_ID in VARCHAR2, I_FROM_STAGE in VARCHAR2) RETURN NUMBER AS
+    PARTITION_SEQUENCE NUMBER:=0;
+    I_TABLE_NAME VARCHAR2(30);
+    I_PARTITION_NAME VARCHAR2(30);
+  BEGIN
+    I_TABLE_NAME:=REGEXP_SUBSTR(I_STEP_ID, '[^#]+', 1, 2);
+    I_PARTITION_NAME:=REGEXP_SUBSTR(I_STEP_ID, '[^#]+', 1, 4);
+    
+    IF I_FROM_STAGE = COLD_STAGE THEN
+      EXECUTE IMMEDIATE 'SELECT COLDTABLENAME FROM ILMMANAGEDTABLE WHERE TABLENAME=:1' INTO I_TABLE_NAME USING I_TABLE_NAME;
+    END IF;
+    
+    IF I_TABLE_NAME IS NOT NULL AND I_PARTITION_NAME IS NOT NULL THEN
+       EXECUTE IMMEDIATE 'SELECT PARTITION_POSITION FROM USER_TAB_PARTITIONS WHERE TABLE_NAME=:1 AND PARTITION_NAME=:2' INTO PARTITION_SEQUENCE USING I_TABLE_NAME, I_PARTITION_NAME;
+    END IF;
+    RETURN PARTITION_SEQUENCE;
+  END;
+  
+  
+  -----------------------------------------------------------------------------------------------------------------
+  -- Construct a step id from subpart of information, which are:
+    -- Level 1 step id
+    -- Table name
+    -- Level 2 step id
+    -- Partition name
+    -- Level 3 step id
+  -----------------------------------------------------------------------------------------------------------------
+  FUNCTION CONSTRUCT_STEP_ID(L1_STEP_ID in NUMBER, I_TABLE_NAME in VARCHAR2 default null, L2_STEP_ID in NUMBER default null, I_PARTITION_NAME in VARCHAR default null, L3_STEP_ID in NUMBER default null) RETURN VARCHAR2 AS
+  BEGIN
+    return L1_STEP_ID || '#' || I_TABLE_NAME || '#' || L2_STEP_ID || '#' || I_PARTITION_NAME || '#' || L3_STEP_ID;
+  END;
+  
+  
+  -----------------------------------------------------------------------------------------------------------------
+  -- Break a step id into subpart of information, which are:
+    -- Level 1 step id
+    -- Table name
+    -- Level 2 step id
+    -- Partition name
+    -- Level 3 step id
+  -----------------------------------------------------------------------------------------------------------------
+  PROCEDURE DECODE_STEP_ID(I_STEP_ID in VARCHAR2, L1_STEP_ID out NUMBER, I_TABLE_NAME out VARCHAR2, L2_STEP_ID out NUMBER, I_PARTITION_NAME out VARCHAR, L3_STEP_ID out NUMBER) AS
+  BEGIN
+    L1_STEP_ID:=REGEXP_SUBSTR(I_STEP_ID, '[^#]+', 1, 1);
+    I_TABLE_NAME:=REGEXP_SUBSTR(I_STEP_ID, '[^#]+', 1, 2);
+    L2_STEP_ID:=REGEXP_SUBSTR(I_STEP_ID, '[^#]+', 1, 3);
+    I_PARTITION_NAME:=REGEXP_SUBSTR(I_STEP_ID, '[^#]+', 1, 4);
+    L3_STEP_ID:=REGEXP_SUBSTR(I_STEP_ID, '[^#]+', 1, 5);
+  END;
+  
+  
+  -----------------------------------------------------------------------------------------------------------------
+  -- A step id might indicate a step that has ended successfully. This method returns next step ID if current step is completed,
+  -- or it returns current step ID if current step is not yet completed.
+  -----------------------------------------------------------------------------------------------------------------
+  FUNCTION INCREMENT_COMPLETED_STEP(I_JOB_ID in NUMBER, I_STEP_ID in VARCHAR2) RETURN VARCHAR2 AS
+    L1_STEP_ID NUMBER;
+    TABLE_NAME VARCHAR2(30);
+    L2_STEP_ID NUMBER;
+    PARTITION_NAME VARCHAR2(30);
+    L3_STEP_ID NUMBER;
+    I_TASK_STATUS VARCHAR2(30);
+  BEGIN
+    EXECUTE IMMEDIATE 'SELECT DISTINCT FIRST_VALUE(STATUS)  OVER (ORDER BY ID DESC) FROM ILMTASK WHERE JOBID=:1 AND STEPID=:2' INTO I_TASK_STATUS USING I_JOB_ID, I_STEP_ID;
+   
+    -- if last step has status ended, then increase step id
+    IF I_TASK_STATUS=TASKSTATUS_ENDED THEN
+      DECODE_STEP_ID(I_STEP_ID, L1_STEP_ID, TABLE_NAME, L2_STEP_ID, PARTITION_NAME, L3_STEP_ID);
+      
+      IF L3_STEP_ID IS NOT NULL THEN 
+        L3_STEP_ID := L3_STEP_ID + 1;
+      ELSIF L2_STEP_ID IS NOT NULL THEN 
+        L2_STEP_ID := L2_STEP_ID + 1;
+      ELSIF  L1_STEP_ID IS NOT NULL THEN 
+        L1_STEP_ID := L1_STEP_ID + 1;
+      END IF;
+      
+      RETURN CONSTRUCT_STEP_ID(L1_STEP_ID, TABLE_NAME, L2_STEP_ID, PARTITION_NAME, L3_STEP_ID);
+    END IF;
+    
+    -- status was not ENDED, continue with existing step id
+    RETURN I_STEP_ID;
+  END;
+  
+  
+  -----------------------------------------------------------------------------------------------------------------
+  -- Permit a step to run if the step is not inferior to resumed step.
+    -- because table name and partition name will change, it permit steps if it detects either table or partition has changed.
+    -- it checks mainly on Level1, Level2 and Level3 step id with same table name and partition name.
+  -----------------------------------------------------------------------------------------------------------------
+  FUNCTION PERMIT_STEP_ID(CURRENT_STEP_ID in VARCHAR2, RESUME_STEP_ID in VARCHAR2) RETURN NUMBER AS
+    CURRENT_L1_STEP_ID NUMBER;
+    CURRENT_I_TABLE_NAME VARCHAR2(30);
+    CURRENT_L2_STEP_ID NUMBER;
+    CURRENT_I_PARTITION_NAME VARCHAR2(30);
+    CURRENT_L3_STEP_ID NUMBER;
+    LAST_L1_STEP_ID NUMBER;
+    LAST_I_TABLE_NAME VARCHAR2(30);
+    LAST_L2_STEP_ID NUMBER;
+    LAST_I_PARTITION_NAME VARCHAR2(30);
+    LAST_L3_STEP_ID NUMBER;
+  BEGIN
+    IF RESUME_STEP_ID IS NULL THEN RETURN 1; END IF;
+    
+    DECODE_STEP_ID(CURRENT_STEP_ID, CURRENT_L1_STEP_ID, CURRENT_I_TABLE_NAME, CURRENT_L2_STEP_ID, CURRENT_I_PARTITION_NAME, CURRENT_L3_STEP_ID);
+    DECODE_STEP_ID(RESUME_STEP_ID, LAST_L1_STEP_ID, LAST_I_TABLE_NAME, LAST_L2_STEP_ID, LAST_I_PARTITION_NAME, LAST_L3_STEP_ID);
+    
+    -- L1 check
+    IF LAST_L1_STEP_ID IS NOT NULL THEN
+      IF CURRENT_L1_STEP_ID < LAST_L1_STEP_ID 
+        THEN RETURN 0; -- inferior L1, forbid
+      END IF;
+    END IF;
+    
+    -- L2 check
+    IF LAST_I_TABLE_NAME IS NOT NULL THEN
+      IF CURRENT_I_TABLE_NAME != LAST_I_TABLE_NAME  -- table has change, new L2 cycle, allow
+        THEN RETURN 1;
+      ELSIF CURRENT_L2_STEP_ID < LAST_L2_STEP_ID 
+        THEN RETURN 0;
+      END IF;
+    END IF;
+    
+    -- L3 check
+    IF LAST_I_PARTITION_NAME IS NOT NULL THEN
+      IF CURRENT_I_PARTITION_NAME != LAST_I_PARTITION_NAME 
+        THEN RETURN 1;
+      ELSIF CURRENT_L3_STEP_ID < LAST_L3_STEP_ID 
+        THEN RETURN 0;
+      END IF;
+    END IF;
+    
+    RETURN 1;
+  END;
+  
+
+  -----------------------------------------------------------------------------------------------------------------
+  -- Proxy of all tasks
+    -- It logs message to ILMLOG
+    -- Exeception raised from task is caught and logged
+    -- Duration of task execution is logged.
+  -----------------------------------------------------------------------------------------------------------------
+  PROCEDURE RUN_TASK(OPERATION in VARCHAR2, I_CURRENT_STEP_ID in VARCHAR2) AS
+  BEGIN
+    -- verfiy step id
+    If PERMIT_STEP_ID (I_CURRENT_STEP_ID, RESUME_STEP_ID)=0 THEN
+      RETURN;
+    END IF;
+    CURRENT_STEP_ID:=I_CURRENT_STEP_ID;
+  
+    -- create a new record in ILMTASK
+    INSERT INTO ILMTASK(ID, JOBID, STEPID, STATUS, STARTTIME) 
+    VALUES (ILMTASK_SEQUENCE.nextval, CURRENT_JOB_ID, CURRENT_STEP_ID, TASKSTATUS_STARTED,  SYSTIMESTAMP)
+    RETURNING ID INTO CURRENT_TASK_ID;
+    
+    -- run operation
+    EXECUTE IMMEDIATE 'BEGIN ' || OPERATION || '; END;';
+    
+    -- update status and end time of current task upon successful completion
+    UPDATE ILMTASK SET STATUS=JOBSTATUS_ENDED, ENDTIME=SYSTIMESTAMP WHERE ID=CURRENT_TASK_ID;
+    
+    EXCEPTION
+    WHEN OTHERS THEN
+      -- log error message in table MIGRATION_STEP and MIGRATION_LOG, and raise error
+      LOG_MESSAGE('Exception is caught : ' || ' - ' || SQLERRM || ' - ' || dbms_utility.format_error_backtrace() || '. ');
+      UPDATE ILMTASK SET STATUS=TASKSTATUS_FAILED, ENDTIME=SYSTIMESTAMP WHERE ID=CURRENT_TASK_ID;
+      UPDATE ILMJOB SET STATUS=JOBSTATUS_FAILED, ENDTIME=SYSTIMESTAMP WHERE ID=CURRENT_JOB_ID;
+      COMMIT;
+      raise;
   END;
   
   
